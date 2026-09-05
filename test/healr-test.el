@@ -369,4 +369,95 @@
       (when-let* ((buf (get-buffer " *healr-test-fleet*")))
         (kill-buffer buf)))))
 
+
+(require 'healr)
+
+(ert-deftest healr-test-dwim-reference ()
+  (should (equal (healr--dwim-reference "/a/b/c/d.el" "/a/b/")
+                 "@c/d.el"))
+  (should (equal (healr--dwim-reference "/a/b/c/d.el" "/a/b/" 3 7)
+                 "@c/d.el#L3-7"))
+  (should (equal (healr--dwim-reference "/a/b/c/d.el" "/a/b/" 3 3)
+                 "@c/d.el#L3"))
+  (should (equal (healr--dwim-reference "/a/b/c/d.el" "/a/b/" 3 nil)
+                 "@c/d.el#L3")))
+
+(ert-deftest healr-test-dispatch-toggles-main-session ()
+  (let ((healr-project-root-function (lambda () "/tmp/proj/"))
+        (fake (healr-test--fake-session :root "/tmp/proj/"))
+        got-args toggled)
+    (unwind-protect
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (&rest _) "claude"))
+                  ((symbol-function 'healr-session-get-or-create)
+                   (lambda (agent root &optional name)
+                     (setq got-args (list agent root name))
+                     fake))
+                  ((symbol-function 'healr-session-toggle)
+                   (lambda (session) (setq toggled session))))
+          (call-interactively #'healr)
+          (should (equal got-args '("claude" "/tmp/proj/" nil)))
+          (should (eq toggled fake)))
+      (kill-buffer (healr-session-buffer fake)))))
+
+(ert-deftest healr-test-new-session-rejects-duplicate ()
+  (let ((healr-project-root-function (lambda () "/tmp/proj/")))
+    (cl-letf (((symbol-function 'healr-session-get)
+               (lambda (&rest _) t)))
+      (should-error (healr-new-session "claude" "main") :type 'user-error))))
+
+(ert-deftest healr-test-send-dwim-requires-file ()
+  (with-current-buffer (get-buffer-create " *healr-test-nofile*")
+    (unwind-protect
+        (should-error (healr-send-dwim) :type 'user-error)
+      (kill-buffer " *healr-test-nofile*"))))
+
+(ert-deftest healr-test-send-dwim-requires-session ()
+  (let ((healr-project-root-function (lambda () "/tmp/proj/")))
+    (cl-letf (((symbol-function 'healr-session-list) (lambda (&rest _) nil)))
+      (with-temp-buffer
+        (setq buffer-file-name "/tmp/proj/x.el")
+        (should-error (healr-send-dwim) :type 'user-error)))))
+
+(ert-deftest healr-test-send-dwim-sends-reference ()
+  (let* ((healr-project-root-function (lambda () "/tmp/proj/"))
+         (session (healr-test--fake-session :root "/tmp/proj/"))
+         sent popped)
+    (unwind-protect
+        (cl-letf (((symbol-function 'healr-session-list)
+                   (lambda (&optional _root) (list session)))
+                  ((symbol-function 'healr-term-send-string)
+                   (lambda (_buf str) (setq sent str)))
+                  ((symbol-function 'pop-to-buffer)
+                   (lambda (buf &rest _) (setq popped buf))))
+          (with-temp-buffer
+            (setq buffer-file-name "/tmp/proj/src/x.el")
+            (healr-send-dwim)
+            (should (equal sent "@src/x.el "))
+            (should (eq popped (healr-session-buffer session))))))
+      (kill-buffer (healr-session-buffer session))))
+
+(ert-deftest healr-test-send-dwim-region-lines ()
+  (let* ((healr-project-root-function (lambda () "/tmp/proj/"))
+         (session (healr-test--fake-session :root "/tmp/proj/"))
+         sent)
+    (unwind-protect
+        (cl-letf (((symbol-function 'healr-session-list)
+                   (lambda (&optional _root) (list session)))
+                  ((symbol-function 'healr-term-send-string)
+                   (lambda (_buf str) (setq sent str)))
+                  ((symbol-function 'pop-to-buffer) #'ignore))
+          (with-temp-buffer
+            (transient-mark-mode 1)
+            (setq buffer-file-name "/tmp/proj/src/x.el")
+            (insert "l1\nl2\nl3\nl4\n")
+            (goto-char (point-min))
+            (forward-line 1)
+            (set-mark (point))
+            (forward-line 2)
+            (activate-mark)
+            (healr-send-dwim)
+            (should (equal sent "@src/x.el#L2-3 "))))
+      (kill-buffer (healr-session-buffer session)))))
+
 ;;; healr-test.el ends here
