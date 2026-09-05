@@ -37,10 +37,147 @@ LINES defaults to `healr-status-tail-lines'."
 ;;; State changes
 
 (defun healr-status--set (session state)
-  "Set SESSION's state to STATE, refreshing the fleet buffer on change."
+  "Set SESSION's state to STATE.
+Refreshes the fleet buffer and fires the attention alert on
+qualifying transitions (see `healr-attention-states')."
   (unless (eq (healr-session-state session) state)
     (setf (healr-session-state session) state)
-    (healr-list--maybe-refresh)))
+    (healr-list--maybe-refresh)
+    (healr-attention--maybe-alert session state)))
+
+;;; Attention layer
+
+(defcustom healr-attention-states '(blocked dead)
+  "Session states whose transitions fire `healr-attention-alert-function'."
+  :type '(repeat symbol)
+  :group 'healr)
+
+(defcustom healr-attention-alert-function #'healr-attention--echo
+  "Function called with (SESSION STATE) on attention transitions.
+`healr-attention--echo' and `healr-attention--system' are provided;
+nil disables alerts."
+  :type '(choice (const :tag "Echo area" healr-attention--echo)
+                 (const :tag "System notification" healr-attention--system)
+                 (const :tag "Off" nil)
+                 function)
+  :group 'healr)
+
+(defcustom healr-attention-poll-seconds 30
+  "Seconds between capture-pane polls of warm sessions for blocked screens."
+  :type 'number
+  :group 'healr)
+
+(defun healr-attention--counts ()
+  "Return (BLOCKED IDLE DEAD) counts over the registry.
+`detached' sessions count as idle."
+  (let ((blocked 0) (idle 0) (dead 0))
+    (dolist (session (healr-session-list))
+      (pcase (healr-session-state session)
+        ('blocked (setq blocked (1+ blocked)))
+        ((or 'idle 'detached) (setq idle (1+ idle)))
+        ('dead (setq dead (1+ dead)))))
+    (list blocked idle dead)))
+
+(defvar healr-attention--mode-line-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mode-line mouse-1] #'healr-list)
+    map)
+  "Keymap for the healr attention modeline segment.")
+
+(defun healr-attention--mode-line ()
+  "Return the attention modeline segment, or "" when all counts are zero."
+  (pcase-let ((`(,blocked ,idle ,dead) (healr-attention--counts)))
+    (if (zerop (+ blocked idle dead))
+        ""
+      (propertize
+       (concat " healr["
+               (when (> blocked 0)
+                 (propertize (format "b:%d" blocked) 'face 'error))
+               (when (> idle 0)
+                 (format "%si:%d" (if (> blocked 0) " " "") idle))
+               (when (> dead 0)
+                 (propertize (format "%sd:%d" (if (> (+ blocked idle) 0) " " "")
+                              dead)
+                             'face 'warning))
+               "]")
+       'local-map healr-attention--mode-line-map
+       'mouse-face 'mode-line-highlight
+       'help-echo "healr fleet (click)"))))
+
+(defun healr-attention--maybe-alert (session state)
+  "Fire `healr-attention-alert-function' for SESSION entering STATE.
+Only for states in `healr-attention-states' and only when SESSION's
+buffer is not visible in any window (nil buffer counts as invisible)."
+  (when (and (memq state healr-attention-states)
+             healr-attention-alert-function
+             (let ((buf (healr-session-buffer session)))
+               (not (and buf
+                         (buffer-live-p buf)
+                         (get-buffer-window buf t)))))
+    (condition-case nil
+        (funcall healr-attention-alert-function session state)
+      (error nil))))
+
+(defun healr-attention--echo (session state)
+  "Echo an attention message for SESSION entering STATE."
+  (message "healr: %s:%s is %s (%s)"
+           (healr-session-agent session)
+           (healr-session-name session)
+           state
+           (file-name-nondirectory
+            (directory-file-name (healr-session-root session)))))
+
+(defun healr-attention--system (session state)
+  "System notification for SESSION entering STATE; echoes as fallback."
+  (let ((body (format "%s:%s is %s"
+                      (healr-session-agent session)
+                      (healr-session-name session)
+                      state)))
+    (cond
+     ((executable-find "osascript")
+      (call-process "osascript" nil nil nil "-e"
+                    (format "display notification "%s" with title "healr""
+                            (replace-regexp-in-string """ "\\"" body))))
+     ((fboundp 'notifications-notify)
+      (notifications-notify :title "healr" :body body))
+     (t
+      (healr-attention--echo session state)))))
+
+(defvar healr-attention--timer nil
+  "The capture-pane poll timer, or nil.")
+
+(defun healr-attention--start-timer ()
+  "Start the poll timer per `healr-attention-poll-seconds'."
+  (unless healr-attention--timer
+    (setq healr-attention--timer
+          (run-at-time healr-attention-poll-seconds
+                       healr-attention-poll-seconds
+                       #'healr-attention--poll))))
+
+(defun healr-attention--stop-timer ()
+  "Stop the poll timer."
+  (when healr-attention--timer
+    (cancel-timer healr-attention--timer)
+    (setq healr-attention--timer nil)))
+
+;;;###autoload
+(define-minor-mode healr-attention-mode
+  "Global minor mode showing healr attention counts in the modeline.
+Also runs the warm-session blocked poll (see `healr-attention--poll')."
+  :global t
+  :group 'healr
+  (let ((entry '(:eval (healr-attention--mode-line))))
+    (if healr-attention-mode
+        (progn
+          (unless (listp global-mode-string)
+            (setq global-mode-string (list global-mode-string)))
+          (unless (member entry global-mode-string)
+            (setq global-mode-string
+                  (append global-mode-string (list entry))))
+          (healr-attention--start-timer))
+      (when (listp global-mode-string)
+        (setq global-mode-string (remove entry global-mode-string)))
+      (healr-attention--stop-timer))))
 
 (defun healr-status--arm-timer (session)
   "(Re)arm SESSION's idle timer."

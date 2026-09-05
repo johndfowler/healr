@@ -1220,4 +1220,122 @@
   (should-not (plist-get (healr-agent--normalize "foo" nil)
                          :blocked-regexp)))
 
+
+;;; Attention mode and alerts (Task 2)
+
+(defun healr-test--registry-with-states (states)
+  "Return (HASH-TABLE SESSIONS) with one fake session per state in STATES."
+  (let ((healr--sessions (make-hash-table :test 'equal))
+        (sessions nil))
+    (dolist (state states)
+      (let ((session (healr-test--fake-session
+                      :name (symbol-name state) :state state)))
+        (puthash (healr-session--key "/tmp/proj/" "claude"
+                                     (symbol-name state))
+                 session healr--sessions)
+        (push session sessions)))
+    (list healr--sessions sessions)))
+
+(ert-deftest healr-test-attention-counts ()
+  (let* ((setup (healr-test--registry-with-states
+                 '(working idle blocked dead detached)))
+         (healr--sessions (car setup))
+         (sessions (cadr setup)))
+    (unwind-protect
+        (should (equal (healr-attention--counts) '(1 2 1)))
+      (mapc (lambda (s) (kill-buffer (healr-session-buffer s))) sessions))))
+
+(ert-deftest healr-test-attention-mode-line ()
+  (let* ((setup (healr-test--registry-with-states '(working)))
+         (healr--sessions (car setup))
+         (sessions (cadr setup)))
+    (unwind-protect
+        (should (equal (healr-attention--mode-line) ""))
+      (mapc (lambda (s) (kill-buffer (healr-session-buffer s))) sessions)))
+  (let* ((setup (healr-test--registry-with-states '(blocked idle dead)))
+         (healr--sessions (car setup))
+         (sessions (cadr setup)))
+    (unwind-protect
+        (let ((segment (healr-attention--mode-line)))
+          (should (string-match-p "healr\\[" segment))
+          (should (string-match-p "b:1" segment))
+          (should (string-match-p "i:1" segment))
+          (should (string-match-p "d:1" segment))
+          (should (get-text-property 0 'local-map segment)))
+      (mapc (lambda (s) (kill-buffer (healr-session-buffer s))) sessions))))
+
+(ert-deftest healr-test-attention-alert-fires-on-listed-transition ()
+  (let ((healr-attention-states '(blocked dead))
+        (healr-attention-alert-function nil)
+        (session (healr-test--fake-session :state 'working))
+        (alerts nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'healr-list--maybe-refresh) #'ignore)
+                  ((symbol-function 'get-buffer-window) (lambda (&rest _) nil)))
+          (setq healr-attention-alert-function
+                (lambda (s state) (push (list s state) alerts)))
+          (healr-status--set session 'blocked)
+          (should (= (length alerts) 1))
+          (healr-status--set session 'blocked)
+          (should (= (length alerts) 1))
+          (healr-status--set session 'idle)
+          (should (= (length alerts) 1))
+          (healr-status--set session 'dead)
+          (should (= (length alerts) 2)))
+      (kill-buffer (healr-session-buffer session)))))
+
+(ert-deftest healr-test-attention-alert-suppressed-when-visible ()
+  (let ((healr-attention-states '(blocked))
+        (healr-attention-alert-function nil)
+        (session (healr-test--fake-session :state 'working))
+        (alerts 0))
+    (unwind-protect
+        (cl-letf (((symbol-function 'healr-list--maybe-refresh) #'ignore)
+                  ((symbol-function 'get-buffer-window)
+                   (lambda (&rest _) 'window)))
+          (setq healr-attention-alert-function
+                (lambda (&rest _) (setq alerts (1+ alerts))))
+          (healr-status--set session 'blocked)
+          (should (= alerts 0)))
+      (kill-buffer (healr-session-buffer session)))))
+
+(ert-deftest healr-test-attention-alert-suppressed-for-unlisted-state ()
+  (let ((healr-attention-states '(dead))
+        (healr-attention-alert-function nil)
+        (session (healr-test--fake-session :state 'working))
+        (alerts 0))
+    (unwind-protect
+        (cl-letf (((symbol-function 'healr-list--maybe-refresh) #'ignore)
+                  ((symbol-function 'get-buffer-window) (lambda (&rest _) nil)))
+          (setq healr-attention-alert-function
+                (lambda (&rest _) (setq alerts (1+ alerts))))
+          (healr-status--set session 'blocked)
+          (should (= alerts 0)))
+      (kill-buffer (healr-session-buffer session)))))
+
+(ert-deftest healr-test-attention-echo-format ()
+  (let ((session (healr-test--fake-session :root "/tmp/alpha/")))
+    (unwind-protect
+        (should (equal (healr-attention--echo session 'blocked)
+                       "healr: claude:main is blocked (alpha)"))
+      (kill-buffer (healr-session-buffer session)))))
+
+(ert-deftest healr-test-attention-mode-toggles-modeline-and-timer ()
+  (let ((global-mode-string '(""))
+        (healr-attention--timer nil)
+        (healr-attention-poll-seconds 30)
+        (started 0) (stopped 0))
+    (cl-letf (((symbol-function 'healr-attention--start-timer)
+               (lambda () (setq started (1+ started))))
+              ((symbol-function 'healr-attention--stop-timer)
+               (lambda () (setq stopped (1+ stopped)))))
+      (healr-attention-mode 1)
+      (should healr-attention-mode)
+      (should (member '(:eval (healr-attention--mode-line)) global-mode-string))
+      (should (= started 1))
+      (healr-attention-mode -1)
+      (should-not healr-attention-mode)
+      (should-not (member '(:eval (healr-attention--mode-line)) global-mode-string))
+      (should (= stopped 1)))))
+
 ;;; healr-test.el ends here
