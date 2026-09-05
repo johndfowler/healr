@@ -20,7 +20,9 @@ and a fleet buffer shows every session's state (working / idle / dead).
 
 ```elisp
 ;; packages.el
-(package! healr :recipe (:local-repo "~/projects/healr"))
+(package! healr :recipe (:host github :repo "johndfowler/healr"))
+;; or from a local checkout:
+;; (package! healr :recipe (:local-repo "~/projects/healr"))
 
 ;; config.el
 (use-package! healr

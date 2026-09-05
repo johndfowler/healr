@@ -4,6 +4,7 @@
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, processes
+;; URL: https://github.com/johndfowler/healr
 
 ;;; Commentary:
 
