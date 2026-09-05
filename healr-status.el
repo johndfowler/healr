@@ -160,6 +160,27 @@ buffer is not visible in any window (nil buffer counts as invisible)."
     (cancel-timer healr-attention--timer)
     (setq healr-attention--timer nil)))
 
+(defun healr-attention--poll ()
+  "Check warm detached/blocked sessions for blocked screens.
+Uses `tmux capture-pane' via `healr-term--tmux-output'; sessions whose
+agent has no :blocked-regexp are skipped, a nil pane (no tmux, dead
+session) leaves state untouched, and per-session errors are contained."
+  (dolist (session (healr-session-list))
+    (when (and (healr-session-tmux session)
+               (memq (healr-session-state session) '(detached blocked)))
+      (condition-case nil
+          (let* ((agent (healr-agent-get (healr-session-agent session)))
+                 (blocked-re (and agent (plist-get agent :blocked-regexp))))
+            (when blocked-re
+              (let ((pane (healr-term--tmux-output
+                           "capture-pane" "-t"
+                           (healr-session-tmux session) "-p")))
+                (when pane
+                  (if (string-match-p blocked-re pane)
+                      (healr-status--set session 'blocked)
+                    (healr-status--set session 'detached))))))
+        (error nil)))))
+
 ;;;###autoload
 (define-minor-mode healr-attention-mode
   "Global minor mode showing healr attention counts in the modeline.

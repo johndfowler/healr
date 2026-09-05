@@ -340,7 +340,7 @@ Append to `test/healr-test.el`:
           (setq healr-attention-alert-function
                 (lambda (&rest _) (setq alerts (1+ alerts))))
           (healr-status--set session 'blocked)
-          (should (= alerts 0))))
+          (should (= alerts 0)))
       (kill-buffer (healr-session-buffer session)))))
 
 (ert-deftest healr-test-attention-alert-suppressed-for-unlisted-state ()
@@ -354,7 +354,7 @@ Append to `test/healr-test.el`:
           (setq healr-attention-alert-function
                 (lambda (&rest _) (setq alerts (1+ alerts))))
           (healr-status--set session 'blocked)
-          (should (= alerts 0))))
+          (should (= alerts 0)))
       (kill-buffer (healr-session-buffer session)))))
 
 (ert-deftest healr-test-attention-echo-format ()
@@ -568,7 +568,7 @@ Append to `test/healr-test.el`:
 ```elisp
 ;;; Detached polling (Task 3)
 
-(defun healr-test--warm-detached (&key (state 'detached))
+(cl-defun healr-test--warm-detached (&key (state 'detached))
   "Return a fake warm session with no buffer."
   (healr-session--create
    :root "/tmp/proj/" :agent "fake" :name "main"

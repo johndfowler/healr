@@ -1338,4 +1338,71 @@
       (should-not (member '(:eval (healr-attention--mode-line)) global-mode-string))
       (should (= stopped 1)))))
 
+
+;;; Detached polling (Task 3)
+
+(cl-defun healr-test--warm-detached (&key (state 'detached))
+  "Return a fake warm session with no buffer."
+  (healr-session--create
+   :root "/tmp/proj/" :agent "fake" :name "main"
+   :buffer nil :state state :last-output 0
+   :tmux "healr_fake_main_aaaaaaaa"))
+
+(ert-deftest healr-test-attention-poll-marks-blocked ()
+  (let ((healr--sessions (make-hash-table :test 'equal))
+        (healr-agent-list '(("fake" :command "fake"
+                             :blocked-regexp "Do you want to proceed")))
+        (session (healr-test--warm-detached)))
+    (cl-letf (((symbol-function 'healr-term--tmux-output)
+               (lambda (&rest _) "some output\nDo you want to proceed? (y/n) "))
+              ((symbol-function 'healr-list--maybe-refresh) #'ignore))
+      (puthash (healr-session--key "/tmp/proj/" "fake" "main")
+               session healr--sessions)
+      (healr-attention--poll)
+      (should (eq (healr-session-state session) 'blocked)))))
+
+(ert-deftest healr-test-attention-poll-clears-to-detached ()
+  (let ((healr--sessions (make-hash-table :test 'equal))
+        (healr-agent-list '(("fake" :command "fake"
+                             :blocked-regexp "Do you want to proceed")))
+        (session (healr-test--warm-detached :state 'blocked)))
+    (cl-letf (((symbol-function 'healr-term--tmux-output)
+               (lambda (&rest _) "proceeding\n> "))
+              ((symbol-function 'healr-list--maybe-refresh) #'ignore))
+      (puthash (healr-session--key "/tmp/proj/" "fake" "main")
+               session healr--sessions)
+      (healr-attention--poll)
+      (should (eq (healr-session-state session) 'detached)))))
+
+(ert-deftest healr-test-attention-poll-skips-non-detached-and-nil-pane ()
+  (let ((healr--sessions (make-hash-table :test 'equal))
+        (healr-agent-list '(("fake" :command "fake"
+                             :blocked-regexp "Do you want to proceed")))
+        (working (healr-test--warm-detached :state 'working))
+        (detached (healr-test--warm-detached)))
+    (cl-letf (((symbol-function 'healr-term--tmux-output)
+               (lambda (&rest _) nil))
+              ((symbol-function 'healr-list--maybe-refresh) #'ignore))
+      (puthash (healr-session--key "/tmp/proj/" "fake" "main")
+               working healr--sessions)
+      (puthash (healr-session--key "/tmp/proj/" "fake" "work")
+               detached healr--sessions)
+      (setf (healr-session-name detached) "work")
+      (healr-attention--poll)
+      (should (eq (healr-session-state working) 'working))
+      (should (eq (healr-session-state detached) 'detached)))))
+
+(ert-deftest healr-test-attention-poll-contains-errors ()
+  (let ((healr--sessions (make-hash-table :test 'equal))
+        (healr-agent-list '(("fake" :command "fake"
+                             :blocked-regexp "(")))
+        (session (healr-test--warm-detached)))
+    (cl-letf (((symbol-function 'healr-term--tmux-output)
+               (lambda (&rest _) "anything"))
+              ((symbol-function 'healr-list--maybe-refresh) #'ignore))
+      (puthash (healr-session--key "/tmp/proj/" "fake" "main")
+               session healr--sessions)
+      (healr-attention--poll)
+      (should (eq (healr-session-state session) 'detached)))))
+
 ;;; healr-test.el ends here
