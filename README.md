@@ -120,6 +120,34 @@ demand.  Sidecar metadata lives in `healr-session-metadata-directory`
 (default `~/.cache/healr/sessions/`).  Set `healr-persist-default` to
 make persistence the default for every agent.
 
+## Attention (the fleet calls you)
+
+```elisp
+(healr-attention-mode 1)
+```
+
+A modeline segment shows live counts of sessions that need you —
+`healr[b:1 i:2 d:1]` — in every buffer; click it to open the fleet.
+A session is `blocked` when its agent is waiting on you (permission
+prompt, y/n question): teach healr the pattern per agent:
+
+```elisp
+(setq healr-agent-list
+      '(("claude" :command "claude" :persist t
+                  :blocked-regexp "Do you want to proceed")))
+```
+
+- Attached sessions are checked on every render; warm sessions
+  (attached or not) are checked with `tmux capture-pane` — every
+  render when attached, every `healr-attention-poll-seconds`
+  (default 30) when detached.
+- Transitions into `healr-attention-states` (default `blocked` and
+  `dead`) fire `healr-attention-alert-function` when the session's
+  buffer isn't visible: echo-area message by default, or
+  `healr-attention--system` for macOS notifications.
+- Blocked clears when the screen moves on (for real TUI agents, when
+  the prompt redraws away).
+
 ## Testing
 
 ```bash

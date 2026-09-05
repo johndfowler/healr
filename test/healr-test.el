@@ -1162,6 +1162,7 @@
     (unwind-protect
         (progn
           (healr-status--note-output session "Do you want to proceed? (y/n) ")
+          (healr-status--evaluate-blocked session)
           (should (eq (healr-session-state session) 'blocked))
           (should-not (healr-session-timer session)))
       (when-let* ((timer (healr-session-timer session))) (cancel-timer timer))
@@ -1176,11 +1177,13 @@
     (unwind-protect
         (progn
           (healr-status--note-output session "chunk")
+          (healr-status--evaluate-blocked session)
           (should (eq (healr-session-state session) 'blocked))
           (with-current-buffer (healr-session-buffer session)
             (erase-buffer)
             (insert "proceeding\n> "))
           (healr-status--note-output session "proceeding\n> ")
+          (healr-status--evaluate-blocked session)
           (should (eq (healr-session-state session) 'working)))
       (when-let* ((timer (healr-session-timer session))) (cancel-timer timer))
       (kill-buffer (healr-session-buffer session)))))
@@ -1195,6 +1198,7 @@
     (unwind-protect
         (progn
           (healr-status--note-output session "thinking\n> ")
+          (healr-status--evaluate-blocked session)
           (should (eq (healr-session-state session) 'blocked)))
       (when-let* ((timer (healr-session-timer session))) (cancel-timer timer))
       (kill-buffer (healr-session-buffer session)))))
@@ -1404,5 +1408,47 @@
                session healr--sessions)
       (healr-attention--poll)
       (should (eq (healr-session-state session) 'detached)))))
+
+
+(ert-deftest healr-test-status-attach-wires-eat-update-hook ()
+  (skip-unless (executable-find "cat"))
+  (let ((healr-idle-seconds 3600)
+        (healr-agent-list '(("fake" :command "cat")))
+        (buf (generate-new-buffer " *healr-test-euh*"))
+        proc session)
+    (unwind-protect
+        (progn
+          (with-current-buffer buf (setq healr-term--backend 'eat))
+          (setq proc (make-process :name "healr-test-euh" :buffer buf
+                                   :command '("cat") :connection-type 'pipe
+                                   :noquery t)
+                session (healr-session--create
+                         :root "/tmp/" :agent "fake" :name "main"
+                         :buffer buf :state 'dead :last-output 0))
+          (healr-status-attach session)
+          (should (buffer-local-value 'eat-update-hook buf)))
+      (when (and proc (process-live-p proc)) (delete-process proc))
+      (when-let* ((timer (and session (healr-session-timer session))))
+        (cancel-timer timer))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+
+(ert-deftest healr-test-status-evaluate-blocked-via-capture-pane ()
+  (let ((healr-idle-seconds 3600)
+        (healr-agent-list '(("fake" :command "fake"
+                             :blocked-regexp "Do you want to proceed")))
+        (session (healr-session--create
+                  :root "/tmp/proj/" :agent "fake" :name "main"
+                  :buffer (get-buffer-create " *healr-test-cp*")
+                  :state 'working :last-output 0
+                  :tmux "healr_fake_main_aaaaaaaa")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'healr-term--tmux-output)
+                   (lambda (&rest _) "prompt: Do you want to proceed? (y/n) "))
+                  ((symbol-function 'healr-list--maybe-refresh) #'ignore))
+          (healr-status--evaluate-blocked session)
+          (should (eq (healr-session-state session) 'blocked)))
+      (when-let* ((timer (healr-session-timer session))) (cancel-timer timer))
+      (kill-buffer (healr-session-buffer session)))))
 
 ;;; healr-test.el ends here

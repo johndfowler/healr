@@ -33,7 +33,17 @@ tmux sessions; the terminal buffer attaches a tmux client. Killing the
 buffer detaches (agent survives); `healr-rehydrate` rebuilds the
 registry from live tmux sessions and sidecars in
 `healr-session-metadata-directory` (`~/.cache/healr/sessions/`).
-States: working / idle / detached / dead. Fleet `d` detaches.
+States: working / idle / blocked / detached / dead. Fleet `d` detaches.
+
+### Attention
+
+`healr-attention-mode` shows `healr[b:N i:N d:N]` counts in the
+modeline (click for fleet). `:blocked-regexp` per agent marks a
+session `blocked` when the agent waits on the user (permission
+prompts); evaluated from `eat-update-hook` (eat), post-filter
+(vterm), `tmux capture-pane` (warm), and `healr-attention--poll`
+(detached). Transitions into `healr-attention-states` fire
+`healr-attention-alert-function` when the buffer isn't visible.
 
 ### Terminal backends
 
@@ -89,4 +99,4 @@ Preconfigures a `fake` agent (`test/fake-agent.sh`) — no API keys needed.
 - No external dependencies beyond Emacs stdlib + eat/vterm
 - `healr-` prefix on all public symbols
 - Hooks: `healr-session-created-hook` (used by `healr-status-attach`)
-- Custom vars: `healr-agent-list`, `healr-terminal-backend`, `healr-idle-seconds`, `healr-project-root-function`, `healr-project-agent-alist`, `healr-persist-default`, `healr-session-metadata-directory`
+- Custom vars: `healr-agent-list`, `healr-terminal-backend`, `healr-idle-seconds`, `healr-project-root-function`, `healr-project-agent-alist`, `healr-persist-default`, `healr-session-metadata-directory`, `healr-status-tail-lines`, `healr-attention-states`, `healr-attention-alert-function`, `healr-attention-poll-seconds`

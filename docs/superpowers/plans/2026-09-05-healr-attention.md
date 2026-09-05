@@ -857,3 +857,30 @@ git commit -m "docs: attention layer (v0.4.0) and attention e2e"
 - `healr-status--set` now also fires `healr-attention--maybe-alert`; all state transitions in the package flow through it, so no path bypasses alerts.
 - Poll only touches `detached`/`blocked` warm sessions; working/idle attached sessions are covered by the output watcher; dead detection stays with rehydrate (no double-duty).
 - Test counts: 70 → 76 (T1) → 83 (T2) → 87 (T3).
+
+---
+
+## Execution amendments (landed during inline execution)
+
+1. **Filter render order**: the wrapped filter now renders FIRST (calls
+   the original filter), then runs the status watcher — evaluation must
+   see the screen the chunk just produced.
+2. **Blocked evaluation is hook/capture-driven, not chunk-driven**: eat
+   queues output and renders from a queue timer, so even after
+   render-first ordering the buffer tail lags. The final design:
+   `healr-status--evaluate-blocked` runs from `eat-update-hook`
+   (buffer-local, wired by `healr-status-attach`) for eat, directly
+   after the filter for vterm (vterm renders inline), and from
+   `healr-attention--poll` for detached warm sessions.
+3. **Warm sessions always read the screen via `tmux capture-pane`**
+   (attached or detached): a tmux client owns the terminal screen, so
+   the eat buffer's tail can be blank while the screen shows a prompt.
+   `healr-attention--poll` delegates to
+   `healr-status--evaluate-blocked`; a poll-observed blocked→cleared
+   transition returns to `detached` instead of working.
+4. **State guard**: `healr-status--evaluate-blocked` acts on
+   working/idle/blocked/detached.
+5. Tests updated to call `healr-status--evaluate-blocked` directly
+   after `healr-status--note-output` (deterministic, no timers); new
+   tests: attach wires `eat-update-hook` buffer-locally, capture-pane
+   path for warm sessions. Final count: 89.

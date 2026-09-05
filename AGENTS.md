@@ -46,11 +46,13 @@ healr-agents  <-  healr-term  <-  healr-session  <-  healr-status  <-  healr
 
 ## Core architecture
 
-- **Agents** are plists `(:name :command :args :env :prompt-regexp :backend :persist)`
+- **Agents** are plists `(:name :command :args :env :prompt-regexp :blocked-regexp :backend :persist)`
   configured through the `healr-agent-list` defcustom (alist of name -> plist)
   and normalized by `healr-agent--normalize`. `:prompt-regexp` matches the
   agent's input prompt in terminal output and marks the session idle
-  immediately; `:backend` overrides the global terminal backend per agent.
+  immediately; `:blocked-regexp` matches the agent's blocked screens
+  (permission prompts, y/n questions) and marks the session blocked;
+  `:backend` overrides the global terminal backend per agent.
   Ships presets for `claude`, `opencode`, `kimi`. A preset whose binary is
   missing costs nothing until launched (`executable-find` check at launch,
   `user-error` if absent).
@@ -70,10 +72,16 @@ healr-agents  <-  healr-term  <-  healr-session  <-  healr-status  <-  healr
   - eat/vterm must **never** be required at top level; load with
     `(require 'eat nil t)` inside the backend function and signal `user-error`
     naming the missing package.
-- **Status** (`healr-status.el`): four states — `working` (output within
+- **Status** (`healr-status.el`): five states — `working` (output within
   `healr-idle-seconds`, default 5), `idle` (silence timeout or
-  `:prompt-regexp` match), `detached` (warm session: tmux alive, no
-  Emacs buffer attached), `dead` (process/tmux gone).
+  `:prompt-regexp` match), `blocked` (agent waiting on the user —
+  permission prompt/y-n question, matched by the agent's
+  `:blocked-regexp` against the screen), `detached` (warm session:
+  tmux alive, no Emacs buffer attached), `dead` (process/tmux gone).
+  Blocked evaluation runs from `eat-update-hook` (eat renders from a
+  queue), after the filter (vterm renders inline), and via
+  `healr-attention--poll` for detached warm sessions; warm sessions
+  read the screen with `tmux capture-pane`.
   `healr-status-attach` (on `healr-session-created-hook`) chains a watcher
   onto the process filter/sentinel, sets the modeline segment, and arms the
   idle timer. Dead sessions stay in the registry until explicitly killed;
@@ -89,6 +97,13 @@ healr-agents  <-  healr-term  <-  healr-session  <-  healr-status  <-  healr
   from `healr-project-agent-alist` (default `mix.exs` → `elixir`,
   `build.gradle[.kts]` → `kotlin`) and that agent is configured, the
   dispatch commands pre-select it in the completing-read.
+- **Attention** (`healr-attention-mode`): global minor mode showing
+  `healr[b:N i:N d:N]` counts (blocked/idle/dead; detached counts as
+  idle) in every buffer's modeline, click for the fleet. Transitions
+  into `healr-attention-states` fire
+  `healr-attention-alert-function` (default echo;
+  `healr-attention--system` for macOS notifications) when the
+  session's buffer isn't visible. Alerts are independent of the mode.
 - **Warm sessions** (`:persist` on an agent, or `healr-persist-default`):
   the agent runs in a detached tmux session
   (`healr_<agent>_<name>_<hash8>`); the eat/vterm buffer runs a tmux
@@ -148,7 +163,9 @@ the ERT suite plus Emacs Lisp conventions (below).
   defcustoms: `healr-agent-list`, `healr-terminal-backend`,
   `healr-idle-seconds`, `healr-project-root-function`,
   `healr-project-agent-alist`, `healr-persist-default`,
-  `healr-session-metadata-directory`.
+  `healr-session-metadata-directory`, `healr-status-tail-lines`,
+  `healr-attention-states`, `healr-attention-alert-function`,
+  `healr-attention-poll-seconds`.
 - The package binds **no global keys**; only the fleet buffer has its own
   keymap (`healr-list-mode-map`).
 - State changes go through `healr-status--set`, which refreshes the fleet

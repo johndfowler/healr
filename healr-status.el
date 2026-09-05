@@ -8,6 +8,7 @@
 (require 'healr-session)
 
 (declare-function healr-new-session "healr")
+(defvar eat-update-hook)             ; from eat, run after each render batch
 
 (defcustom healr-idle-seconds 5
   "Seconds of terminal silence after which a working session turns idle."
@@ -162,23 +163,18 @@ buffer is not visible in any window (nil buffer counts as invisible)."
 
 (defun healr-attention--poll ()
   "Check warm detached/blocked sessions for blocked screens.
-Uses `tmux capture-pane' via `healr-term--tmux-output'; sessions whose
-agent has no :blocked-regexp are skipped, a nil pane (no tmux, dead
-session) leaves state untouched, and per-session errors are contained."
+Delegates to `healr-status--evaluate-blocked' (which reads the screen
+via `tmux capture-pane' for warm sessions); a blocked session whose
+screen cleared is set back to `detached' here rather than working."
   (dolist (session (healr-session-list))
     (when (and (healr-session-tmux session)
                (memq (healr-session-state session) '(detached blocked)))
       (condition-case nil
-          (let* ((agent (healr-agent-get (healr-session-agent session)))
-                 (blocked-re (and agent (plist-get agent :blocked-regexp))))
-            (when blocked-re
-              (let ((pane (healr-term--tmux-output
-                           "capture-pane" "-t"
-                           (healr-session-tmux session) "-p")))
-                (when pane
-                  (if (string-match-p blocked-re pane)
-                      (healr-status--set session 'blocked)
-                    (healr-status--set session 'detached))))))
+          (let ((was-blocked (eq (healr-session-state session) 'blocked)))
+            (healr-status--evaluate-blocked session)
+            (when (and was-blocked
+                       (eq (healr-session-state session) 'working))
+              (healr-status--set session 'detached)))
         (error nil)))))
 
 ;;;###autoload
@@ -227,21 +223,38 @@ timer re-arms."
     (when (> (length window) 500)
       (setq window (substring window (- (length window) 500))))
     (setf (healr-session-recent-output session) window)
-    (let* ((agent (healr-agent-get (healr-session-agent session)))
-           (blocked-re (and agent (plist-get agent :blocked-regexp)))
-           (tail (and blocked-re
-                      (healr-status--buffer-tail
-                       (healr-session-buffer session)))))
-      (cond
-       ((and blocked-re tail (string-match-p blocked-re tail))
-        (healr-status--mark-blocked session))
-       ((and agent
-             (plist-get agent :prompt-regexp)
-             (string-match-p (plist-get agent :prompt-regexp) window))
-        (healr-status--set session 'idle))
-       (t
+    (let ((agent (healr-agent-get (healr-session-agent session))))
+      (if (and agent
+               (plist-get agent :prompt-regexp)
+               (string-match-p (plist-get agent :prompt-regexp) window))
+          (healr-status--set session 'idle)
         (healr-status--set session 'working)
-        (healr-status--arm-timer session))))))
+        (healr-status--arm-timer session)))))
+
+(defun healr-status--evaluate-blocked (session)
+  "Evaluate SESSION's blocked state from what's on its screen.
+Warm (tmux) sessions read the screen via `tmux capture-pane' — tmux
+owns the terminal there, so the buffer's tail is unreliable — and
+other sessions read the terminal buffer's tail.  Must run only when
+the screen is freshly rendered (see `eat-update-hook' and the vterm
+filter path).  A match of the agent's :blocked-regexp marks blocked;
+a blocked session whose screen no longer matches goes back to working."
+  (when (memq (healr-session-state session) '(working idle blocked detached))
+    (let* ((agent (healr-agent-get (healr-session-agent session)))
+           (blocked-re (and agent (plist-get agent :blocked-regexp))))
+      (when blocked-re
+        (let ((content
+               (if-let* ((tmux-name (healr-session-tmux session)))
+                   (healr-term--tmux-output "capture-pane" "-t" tmux-name "-p")
+                 (healr-status--buffer-tail
+                  (healr-session-buffer session)))))
+          (when content
+            (cond
+             ((string-match-p blocked-re content)
+              (healr-status--mark-blocked session))
+             ((eq (healr-session-state session) 'blocked)
+              (healr-status--set session 'working)
+              (healr-status--arm-timer session)))))))))
 
 (defun healr-status--mark-dead (session)
   "Mark SESSION dead and stop its idle timer."
@@ -268,19 +281,26 @@ The agent is waiting on the user (permission prompt, y/n question)."
 
 ;;; Process watching
 
-(defun healr-status--wrap-process (session proc)
-  "Chain SESSION's status watcher onto PROC's filter and sentinel."
+(defun healr-status--wrap-process (session proc backend)
+  "Chain SESSION's status watcher onto PROC's filter and sentinel.
+BACKEND is the session buffer's terminal backend (`eat' or `vterm'):
+vterm renders inside its filter, so the blocked evaluation can run
+right after it; eat renders from a queue and is evaluated from
+`eat-update-hook' instead (see `healr-status-attach')."
   (let ((orig-filter (process-filter proc))
         (orig-sentinel (process-sentinel proc)))
     (set-process-filter
      proc
      (lambda (process output)
-       (condition-case nil
-           (healr-status--note-output session output)
-         (error nil))
        (if orig-filter
            (funcall orig-filter process output)
-         (internal-default-process-filter process output))))
+         (internal-default-process-filter process output))
+       (condition-case nil
+           (progn
+             (healr-status--note-output session output)
+             (when (eq backend 'vterm)
+               (healr-status--evaluate-blocked session)))
+         (error nil))))
     (set-process-sentinel
      proc
      (lambda (process event)
@@ -309,11 +329,17 @@ the modeline segment.  Suitable for `healr-session-created-hook'."
         (setq healr--buffer-session session
               mode-line-process '((:eval (healr-status--mode-line)))))
       (if-let* ((proc (get-buffer-process buf)))
-          (progn
+          (let ((backend (buffer-local-value 'healr-term--backend buf)))
             (setf (healr-session-state session) 'working
                   (healr-session-last-output session) (float-time)
                   (healr-session-recent-output session) nil)
-            (healr-status--wrap-process session proc)
+            (when (eq backend 'eat)
+              (with-current-buffer buf
+                (add-hook 'eat-update-hook
+                          (lambda ()
+                            (healr-status--evaluate-blocked session))
+                          nil t)))
+            (healr-status--wrap-process session proc backend)
             (healr-status--arm-timer session))
         (healr-status--mark-dead session)))))
 
