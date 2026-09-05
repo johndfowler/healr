@@ -108,6 +108,11 @@ Surfaces:
   binaries are not filtered here; they error at launch), get-or-create the
   `"main"` session in the current project, toggle visibility.
 - `M-x healr-new-session` — agent + name, always creates.
+- Both dispatch commands offer a project-aware default agent (added in
+  v0.2.0): when the project root contains a marker file from
+  `healr-project-agent-alist` (default `mix.exs` → elixir,
+  `build.gradle[.kts]` → kotlin) and that agent is configured in
+  `healr-agent-list`, the completing-read pre-selects it.
 - `M-x healr-send-dwim` — from a file buffer, insert `@relative/path` (or
   `@relative/path#L10-20` with active region) into a target session's prompt
   without submitting. Only live sessions are candidates: one live session in

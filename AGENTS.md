@@ -82,6 +82,10 @@ healr-agents  <-  healr-term  <-  healr-session  <-  healr-status  <-  healr
 - **Buffer naming**: `*healr:<project-base>:<agent>:<session>*`; on collision
   with a buffer owned by a *different* project root, disambiguate with an
   8-char sha1 prefix of root: `*healr:<base>-<hash>:<agent>:<session>*`.
+- **Project-aware defaults**: when the project root contains a marker
+  from `healr-project-agent-alist` (default `mix.exs` → `elixir`,
+  `build.gradle[.kts]` → `kotlin`) and that agent is configured, the
+  dispatch commands pre-select it in the completing-read.
 - **healr-send-dwim**: from a file buffer, inserts `@relative/path` (or
   `@relative/path#L10-20` with an active region) at a live session's prompt
   without submitting; with multiple live sessions it prompts which.
@@ -128,7 +132,8 @@ the ERT suite plus Emacs Lisp conventions (below).
 - User-facing failures signal `user-error` with a message prefixed `healr: `.
 - Customization lives in `defgroup healr` (defined in `healr-agents.el`);
   defcustoms: `healr-agent-list`, `healr-terminal-backend`,
-  `healr-idle-seconds`, `healr-project-root-function`.
+  `healr-idle-seconds`, `healr-project-root-function`,
+  `healr-project-agent-alist`.
 - The package binds **no global keys**; only the fleet buffer has its own
   keymap (`healr-list-mode-map`).
 - State changes go through `healr-status--set`, which refreshes the fleet

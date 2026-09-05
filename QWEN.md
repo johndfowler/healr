@@ -16,7 +16,7 @@ The package is split across five `.el` files, each a distinct concern:
 
 ### Key data flow
 
-1. **Agent config** → `healr-agent-list` alist, normalized via `healr-agent--normalize`
+1. **Agent config** → `healr-agent-list` alist, normalized via `healr-agent--normalize`; `healr-project-agent-alist` maps root marker files (`mix.exs`, `build.gradle.kts`, ...) to a default agent offered by the dispatch commands
 2. **Session creation** → `healr-session-create` calls `healr-term-make` to spawn a terminal buffer
 3. **State tracking** → `healr-status-attach` wraps the process filter/sentinel; `prompt-regexp` matching marks idle immediately
 4. **Fleet buffer** → `healr-list` displays all sessions via `tabulated-list-mode` with keys `RET`/`n`/`k`/`r`/`R`/`g`
@@ -80,4 +80,4 @@ Preconfigures a `fake` agent (`test/fake-agent.sh`) — no API keys needed.
 - No external dependencies beyond Emacs stdlib + eat/vterm
 - `healr-` prefix on all public symbols
 - Hooks: `healr-session-created-hook` (used by `healr-status-attach`)
-- Custom vars: `healr-agent-list`, `healr-terminal-backend`, `healr-idle-seconds`, `healr-project-root-function`
+- Custom vars: `healr-agent-list`, `healr-terminal-backend`, `healr-idle-seconds`, `healr-project-root-function`, `healr-project-agent-alist`

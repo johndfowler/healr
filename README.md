@@ -57,7 +57,40 @@ Plist keys: `:command` (defaults to the name), `:args`, `:env`,
 
 Note: the eat backend execs the agent directly, without shell startup
 files.  If an agent needs direnv or a version manager's shims, wrap it
-as in the `wrapped` example above.
+as in the `wrapped` example above (or see below).
+
+## Language workflows
+
+Some ecosystems want environment setup before the agent starts — `mise`
+or `asdf` for Erlang/Elixir, SDKMAN/JAVA_HOME for Kotlin.  Wrap the
+agent in your env manager:
+
+```elisp
+(setq healr-agent-list
+      '(("claude"   :command "claude")
+        ;; Elixir: project .envrc / .tool-versions via direnv
+        ("elixir"   :command "direnv" :args ("exec" "." "claude"))
+        ;; Kotlin: SDKMAN init, then exec
+        ("kotlin"   :command "sh"
+         :args ("-c" ". \"$HOME/.sdkman/bin/sdkman-init.sh\"; exec claude"))))
+```
+
+(The vterm backend runs shell startup files anyway, so unwrapped agents
+usually work there too.)
+
+With `healr-project-agent-alist`, `M-x healr` and `M-x healr-new-session`
+offer the matching agent as the default when the project root contains
+the marker file:
+
+```elisp
+;; default value
+(("mix.exs" . "elixir")
+ ("build.gradle.kts" . "kotlin")
+ ("build.gradle" . "kotlin"))
+```
+
+A mapping only applies when the agent is also in `healr-agent-list`, so
+the defaults cost nothing where they are unused.
 
 ## Testing
 
