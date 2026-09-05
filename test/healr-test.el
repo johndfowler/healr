@@ -604,4 +604,46 @@
             (should-error (healr-session-rename session "") :type 'user-error))
         (mapc #'healr-session-kill (healr-session-list))))))
 
+
+;;; Project-aware agent defaults
+
+(ert-deftest healr-test-default-agent ()
+  (let ((root (make-temp-file "healr-proj" t)))
+    (unwind-protect
+        (let ((healr-project-agent-alist
+               '(("mix.exs" . "elixir")
+                 ("build.gradle.kts" . "kotlin")))
+              (healr-agent-list '(("elixir" :command "claude"))))
+          (should-not (healr--default-agent root))
+          (write-region "" nil (expand-file-name "build.gradle.kts" root))
+          (should-not (healr--default-agent root))
+          (write-region "" nil (expand-file-name "mix.exs" root))
+          (should (equal (healr--default-agent root) "elixir")))
+      (delete-directory root t))))
+
+(ert-deftest healr-test-dispatch-offers-project-default ()
+  (let* ((root (make-temp-file "healr-proj" t))
+         (healr-project-root-function (lambda () root))
+         (healr-project-agent-alist '(("mix.exs" . "elixir")))
+         (healr-agent-list '(("elixir" :command "claude")
+                             ("claude" :command "claude")))
+         (fake (healr-test--fake-session :root root))
+         got-default got-prompt)
+    (unwind-protect
+        (progn
+          (write-region "" nil (expand-file-name "mix.exs" root))
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (prompt &rest args)
+                       (setq got-prompt prompt
+                             got-default (nth 5 args))
+                       "elixir"))
+                    ((symbol-function 'healr-session-get-or-create)
+                     (lambda (&rest _) fake))
+                    ((symbol-function 'healr-session-toggle) #'ignore))
+            (call-interactively #'healr)
+            (should (equal got-default "elixir"))
+            (should (string-match-p "elixir" got-prompt))))
+      (kill-buffer (healr-session-buffer fake))
+      (delete-directory root t))))
+
 ;;; healr-test.el ends here

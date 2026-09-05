@@ -1,7 +1,7 @@
 ;;; healr.el --- Fleet layer for agentic CLI tools  -*- lexical-binding: t; -*-
 
 ;; Author: healr contributors
-;; Version: 0.1.0
+;; Version: 0.2.0
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, processes
 ;; URL: https://github.com/johndfowler/healr
@@ -29,10 +29,36 @@
 
 (add-hook 'healr-session-created-hook #'healr-status-attach)
 
+(defcustom healr-project-agent-alist
+  '(("mix.exs" . "elixir")
+    ("build.gradle.kts" . "kotlin")
+    ("build.gradle" . "kotlin"))
+  "Alist of (MARKER-FILE . AGENT-NAME) for project-aware agent defaults.
+When the project root contains MARKER-FILE and AGENT-NAME is configured
+in `healr-agent-list', `M-x healr' and `M-x healr-new-session' offer
+that agent as the default."
+  :type '(alist :key-type (string :tag "Marker file")
+                :value-type (string :tag "Agent name"))
+  :group 'healr)
+
+(defun healr--default-agent (root)
+  "Return the default agent name for ROOT per `healr-project-agent-alist'.
+Only markers present at ROOT whose agent is configured in
+`healr-agent-list' count; nil when nothing matches."
+  (cl-some (lambda (entry)
+             (and (file-exists-p (expand-file-name (car entry) root))
+                  (member (cdr entry) (healr-agent-names))
+                  (cdr entry)))
+           healr-project-agent-alist))
+
 ;;;###autoload
 (defun healr (agent)
   "Open or toggle AGENT's main session in the current project."
-  (interactive (list (completing-read "Agent: " (healr-agent-names) nil t)))
+  (interactive
+   (let ((default (healr--default-agent (funcall healr-project-root-function))))
+     (list (completing-read
+            (if default (format "Agent (%s): " default) "Agent: ")
+            (healr-agent-names) nil t nil nil default))))
   (healr-session-toggle
    (healr-session-get-or-create agent (funcall healr-project-root-function))))
 
@@ -40,8 +66,11 @@
 (defun healr-new-session (agent name)
   "Create a new session NAME for AGENT in the current project."
   (interactive
-   (list (completing-read "Agent: " (healr-agent-names) nil t)
-         (read-string "Session name: ")))
+   (let ((default (healr--default-agent (funcall healr-project-root-function))))
+     (list (completing-read
+            (if default (format "Agent (%s): " default) "Agent: ")
+            (healr-agent-names) nil t nil nil default)
+           (read-string "Session name: "))))
   (when (string-empty-p name)
     (user-error "healr: session name must not be empty"))
   (let ((root (funcall healr-project-root-function)))
