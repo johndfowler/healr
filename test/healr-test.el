@@ -13,17 +13,19 @@
     (should-not (plist-get agent :args))
     (should-not (plist-get agent :env))
     (should-not (plist-get agent :prompt-regexp))
-    (should-not (plist-get agent :backend))))
+    (should-not (plist-get agent :backend))
+    (should-not (plist-member agent :persist))))
 
 (ert-deftest healr-test-agent-normalize-explicit ()
   (let ((agent (healr-agent--normalize
                 "foo" '(:command "bar" :args ("--baz") :env (("A" . "1"))
-                        :prompt-regexp "> " :backend vterm))))
+                        :prompt-regexp "> " :backend vterm :persist t))))
     (should (equal (plist-get agent :command) "bar"))
     (should (equal (plist-get agent :args) '("--baz")))
     (should (equal (plist-get agent :env) '(("A" . "1"))))
     (should (equal (plist-get agent :prompt-regexp) "> "))
-    (should (eq (plist-get agent :backend) 'vterm))))
+    (should (eq (plist-get agent :backend) 'vterm))
+    (should (eq (plist-get agent :persist) t))))
 
 (ert-deftest healr-test-agent-get-known-and-unknown ()
   (let ((healr-agent-list '(("alpha" :command "alpha-cli"))))
@@ -645,5 +647,100 @@
             (should (string-match-p "elixir" got-prompt))))
       (kill-buffer (healr-session-buffer fake))
       (delete-directory root t))))
+
+
+;;; tmux primitives (Task 1, warm sessions)
+
+(ert-deftest healr-test-term-persist-p ()
+  (let ((healr-persist-default nil))
+    (should-not (healr-term-persist-p '( :name "a" )))
+    (should (healr-term-persist-p '(:name "a" :persist t)))
+    (should-not (healr-term-persist-p '(:name "a" :persist nil))))
+  (let ((healr-persist-default t))
+    (should (healr-term-persist-p '(:name "a")))
+    (should-not (healr-term-persist-p '(:name "a" :persist nil)))))
+
+(ert-deftest healr-test-term-tmux-name ()
+  (should (string-match-p
+           "\\`healr_claude_main_[0-9a-f]\\{8\\}\\'"
+           (healr-term--tmux-name "/tmp/proj/" "claude" "main")))
+  (should (string-match-p
+           "\\`healr_my-agent_work-1_[0-9a-f]\\{8\\}\\'"
+           (healr-term--tmux-name "/tmp/proj/" "my agent" "work 1")))
+  (should (equal (healr-term--tmux-name "/tmp/proj/" "claude" "main")
+                 (healr-term--tmux-name "/tmp/proj/" "claude" "main")))
+  (should-not (equal (healr-term--tmux-name "/a/proj/" "claude" "main")
+                     (healr-term--tmux-name "/b/proj/" "claude" "main"))))
+
+(ert-deftest healr-test-term-tmux-alive-p ()
+  (cl-letf (((symbol-function 'healr-term--tmux-run)
+             (lambda (&rest _) 0)))
+    (should (healr-term--tmux-alive-p "healr_x_y_00000000")))
+  (cl-letf (((symbol-function 'healr-term--tmux-run)
+             (lambda (&rest _) 1)))
+    (should-not (healr-term--tmux-alive-p "healr_x_y_00000000"))))
+
+(ert-deftest healr-test-term-tmux-spawn-argv ()
+  (let (calls)
+    (cl-letf (((symbol-function 'healr-term--tmux-run)
+               (lambda (&rest args) (push args calls) 0))
+              ((symbol-function 'executable-find)
+               (lambda (_cmd &optional _remote) "/usr/bin/tmux")))
+      (healr-term--tmux-spawn
+       "healr_fake_main_aaaaaaaa"
+       (healr-agent--normalize "fake" '(:command "fake" :args ("-x")
+                                        :env (("A" . "1")) :persist t))
+       "/tmp/proj/")
+      (setq calls (nreverse calls))
+      (let ((spawn (car calls)))
+        (should (equal (car spawn) "new-session"))
+        (should (member "-d" spawn))
+        (should (member "healr_fake_main_aaaaaaaa" spawn))
+        (should (member "/tmp/proj/" spawn))
+        (should (member "-e" spawn))
+        (should (member "A=1" spawn))
+        (should (member "--" spawn))
+        (should (member "fake" spawn))
+        (should (member "-x" spawn)))
+      (should (= (length (seq-filter (lambda (c) (equal (car c) "set-option"))
+                                     calls))
+                 2)))))
+
+(ert-deftest healr-test-term-tmux-spawn-errors ()
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (_cmd &optional _remote) nil)))
+    (should-error
+     (healr-term--tmux-spawn "healr_x_y_aaaaaaaa" '(:name "x" :command "x") "/tmp/")
+     :type 'user-error))
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (_cmd &optional _remote) "/usr/bin/tmux"))
+            ((symbol-function 'healr-term--tmux-run)
+             (lambda (&rest _) 1)))
+    (should-error
+     (healr-term--tmux-spawn "healr_x_y_aaaaaaaa" '(:name "x" :command "x") "/tmp/")
+     :type 'user-error)))
+
+(ert-deftest healr-test-term-tmux-attach ()
+  (let (made)
+    (cl-letf (((symbol-function 'healr-term--make-eat)
+               (lambda (bn cmd args)
+                 (setq made (list bn cmd args))
+                 (get-buffer-create bn))))
+      (unwind-protect
+          (let ((buf (healr-term--tmux-attach "*healr-test-attach*"
+                                              "healr_x_y_aaaaaaaa" 'eat)))
+            (should (equal (car made) "*healr-test-attach*"))
+            (should (equal (nth 1 made) "tmux"))
+            (should (equal (nth 2 made)
+                           (list "attach-session" "-t" "healr_x_y_aaaaaaaa")))
+            (should (eq (buffer-local-value 'healr-term--backend buf) 'eat)))
+        (when-let* ((buf (get-buffer "*healr-test-attach*")))
+          (kill-buffer buf))))))
+
+(ert-deftest healr-test-term-tmux-absent-degrades ()
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (_cmd &optional _remote) nil)))
+    (should (= (healr-term--tmux-run "has-session" "-t" "x") 1))
+    (should-not (healr-term--tmux-output "list-sessions"))))
 
 ;;; healr-test.el ends here

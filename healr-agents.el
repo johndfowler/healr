@@ -27,13 +27,17 @@ Plist keys:
   :group 'healr)
 
 (defun healr-agent--normalize (name spec)
-  "Return the full agent plist for NAME from alist entry SPEC."
-  (list :name name
-        :command (or (plist-get spec :command) name)
-        :args (plist-get spec :args)
-        :env (plist-get spec :env)
-        :prompt-regexp (plist-get spec :prompt-regexp)
-        :backend (plist-get spec :backend)))
+  "Return the full agent plist for NAME from alist entry SPEC.
+:persist is included only when SPEC sets it, so
+`healr-persist-default' can apply otherwise."
+  (append (list :name name
+                :command (or (plist-get spec :command) name)
+                :args (plist-get spec :args)
+                :env (plist-get spec :env)
+                :prompt-regexp (plist-get spec :prompt-regexp)
+                :backend (plist-get spec :backend))
+          (when (plist-member spec :persist)
+            (list :persist (plist-get spec :persist)))))
 
 (defun healr-agent-get (name)
   "Return the normalized agent plist for NAME, or nil if not configured."

@@ -2,6 +2,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'subr-x)
 
 (defvar eat-terminal)             ; buffer-local in eat buffers
@@ -100,6 +101,86 @@ is bound to nil so the buffer survives the agent for `healr-session-restart'."
   "Return non-nil when BUFFER has a live terminal process."
   (and (buffer-live-p buffer)
        (process-live-p (get-buffer-process buffer))))
+
+;;; tmux persistence (warm sessions)
+
+(defcustom healr-persist-default nil
+  "When non-nil, agents run inside detached tmux sessions by default.
+An agent plist's :persist overrides this per agent."
+  :type 'boolean
+  :group 'healr)
+
+(defun healr-term-persist-p (agent)
+  "Return non-nil when AGENT plist runs warm (tmux-persisted)."
+  (if (plist-member agent :persist)
+      (plist-get agent :persist)
+    healr-persist-default))
+
+(defun healr-term--tmux-run (&rest args)
+  "Run tmux with ARGS and return the exit code.
+Returns 1 when tmux is not installed.  This wrapper and
+`healr-term--tmux-output' carry every tmux shell-out, so tests stub
+only them."
+  (if (executable-find "tmux")
+      (apply #'call-process "tmux" nil nil nil args)
+    1))
+
+(defun healr-term--tmux-output (&rest args)
+  "Run tmux with ARGS; return trimmed stdout, or nil on failure.
+Returns nil when tmux is not installed."
+  (when (executable-find "tmux")
+    (let ((buf (generate-new-buffer " *healr-tmux*")))
+      (unwind-protect
+          (when (zerop (apply #'call-process "tmux" nil buf nil args))
+            (with-current-buffer buf
+              (string-trim
+               (buffer-substring-no-properties (point-min) (point-max)))))
+        (kill-buffer buf)))))
+
+(defun healr-term--tmux-name (root agent name)
+  "Return the deterministic tmux session name for ROOT AGENT NAME."
+  (let ((sanitize (lambda (s) (replace-regexp-in-string "[^a-zA-Z0-9_-]" "-" s))))
+    (format "healr_%s_%s_%s"
+            (funcall sanitize agent)
+            (funcall sanitize name)
+            (substring (secure-hash 'sha1 root) 0 8))))
+
+(defun healr-term--tmux-alive-p (tmux-name)
+  "Return non-nil when tmux session TMUX-NAME exists."
+  (zerop (healr-term--tmux-run "has-session" "-t" tmux-name)))
+
+(defun healr-term--tmux-spawn (tmux-name agent directory)
+  "Create a detached tmux session TMUX-NAME running AGENT in DIRECTORY.
+AGENT is a normalized agent plist.  The session ends when the agent
+exits (no `remain-on-exit'), so `healr-term--tmux-alive-p' is a
+truthful liveness check.  Signals `user-error' when tmux is missing
+or the session cannot be created."
+  (unless (executable-find "tmux")
+    (user-error "healr: `tmux' is required for persistent sessions"))
+  (let ((argv (append (list "new-session" "-d" "-s" tmux-name "-c" directory)
+                      (cl-mapcan (lambda (kv)
+                                   (list "-e" (concat (car kv) "=" (cdr kv))))
+                                 (plist-get agent :env))
+                      (list "--" (plist-get agent :command))
+                      (plist-get agent :args))))
+    (unless (zerop (apply #'healr-term--tmux-run argv))
+      (user-error "healr: tmux could not create session `%s'" tmux-name))
+    (healr-term--tmux-run "set-option" "-t" tmux-name "status" "off")
+    (healr-term--tmux-run "set-option" "-t" tmux-name "history-limit" "50000")
+    tmux-name))
+
+(defun healr-term--tmux-attach (buffer-name tmux-name backend)
+  "Create a terminal buffer BUFFER-NAME attached to TMUX-NAME via BACKEND.
+BACKEND is `eat' or `vterm' — the terminal used for the client view."
+  (let ((buf (pcase backend
+               ('eat (healr-term--make-eat
+                      buffer-name "tmux" (list "attach-session" "-t" tmux-name)))
+               ('vterm (healr-term--make-vterm
+                        buffer-name "tmux" (list "attach-session" "-t" tmux-name)))
+               (_ (user-error "healr: unknown terminal backend `%s'" backend)))))
+    (with-current-buffer buf
+      (setq healr-term--backend backend))
+    buf))
 
 (provide 'healr-term)
 ;;; healr-term.el ends here
