@@ -218,4 +218,155 @@
               (should (eq popped (healr-session-buffer session)))))
         (mapc #'healr-session-kill (healr-session-list))))))
 
+
+(require 'healr-status)
+
+(cl-defun healr-test--fake-session (&key (root "/tmp/proj/") (agent "claude")
+                                      (name "main") (state 'working))
+  "Return a fake session struct with a fresh (process-less) buffer."
+  (healr-session--create
+   :root root :agent agent :name name
+   :buffer (get-buffer-create (format " *healr-test-%s-%s*" agent name))
+   :state state :last-output (float-time)))
+
+(ert-deftest healr-test-status-set-refreshes-on-change ()
+  (let ((refreshed 0)
+        (session (healr-test--fake-session)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'healr-list--maybe-refresh)
+                   (lambda () (setq refreshed (1+ refreshed)))))
+          (healr-status--set session 'working)
+          (should (= refreshed 0))
+          (healr-status--set session 'idle)
+          (should (= refreshed 1))
+          (should (eq (healr-session-state session) 'idle)))
+      (kill-buffer (healr-session-buffer session)))))
+
+(ert-deftest healr-test-status-note-output-working ()
+  (let ((healr-idle-seconds 3600)
+        (healr-agent-list '(("claude" :command "claude")))
+        (session (healr-test--fake-session :state 'idle)))
+    (unwind-protect
+        (progn
+          (healr-status--note-output session "some output")
+          (should (eq (healr-session-state session) 'working))
+          (should (healr-session-timer session))
+          (should (> (healr-session-last-output session) 0)))
+      (when-let* ((timer (healr-session-timer session))) (cancel-timer timer))
+      (kill-buffer (healr-session-buffer session)))))
+
+(ert-deftest healr-test-status-note-output-prompt-regexp ()
+  (let ((healr-idle-seconds 3600)
+        (healr-agent-list '(("claude" :command "claude" :prompt-regexp "^> $")))
+        (session (healr-test--fake-session)))
+    (unwind-protect
+        (progn
+          (healr-status--note-output session "thinking...\n> ")
+          (should (eq (healr-session-state session) 'idle)))
+      (when-let* ((timer (healr-session-timer session))) (cancel-timer timer))
+      (kill-buffer (healr-session-buffer session)))))
+
+(ert-deftest healr-test-status-idle-check ()
+  (let ((healr-idle-seconds 5)
+        (session (healr-test--fake-session)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'healr-list--maybe-refresh) #'ignore))
+          (setf (healr-session-last-output session) (float-time))
+          (healr-status--idle-check session)
+          (should (eq (healr-session-state session) 'working))
+          (setf (healr-session-last-output session) (- (float-time) 60))
+          (healr-status--idle-check session)
+          (should (eq (healr-session-state session) 'idle)))
+      (kill-buffer (healr-session-buffer session)))))
+
+(ert-deftest healr-test-status-mark-dead ()
+  (let ((healr-idle-seconds 3600)
+        (healr-agent-list nil)
+        (session (healr-test--fake-session)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'healr-list--maybe-refresh) #'ignore))
+          (healr-status--note-output session "x")
+          (should (healr-session-timer session))
+          (healr-status--mark-dead session)
+          (should (eq (healr-session-state session) 'dead))
+          (should-not (healr-session-timer session)))
+      (when-let* ((timer (healr-session-timer session))) (cancel-timer timer))
+      (kill-buffer (healr-session-buffer session)))))
+
+(ert-deftest healr-test-status-attach-watches-real-process ()
+  (skip-unless (executable-find "cat"))
+  (let ((healr-idle-seconds 3600)
+        (healr--sessions (make-hash-table :test 'equal))
+        (healr-agent-list '(("fake" :command "cat")))
+        (buf (generate-new-buffer " *healr-test-cat*"))
+        proc session)
+    (unwind-protect
+        (progn
+          (setq proc (make-process :name "healr-test-cat" :buffer buf
+                                   :command '("cat") :connection-type 'pipe
+                                   :noquery t)
+                session (healr-session--create
+                         :root "/tmp/" :agent "fake" :name "main"
+                         :buffer buf :state 'dead :last-output 0))
+          (healr-status-attach session)
+          (should (eq (healr-session-state session) 'working))
+          (process-send-string proc "hi\n")
+          (accept-process-output proc 1)
+          (should (> (healr-session-last-output session) 0))
+          (delete-process proc)
+          (accept-process-output proc 1)
+          (should (eq (healr-session-state session) 'dead)))
+      (when (and proc (process-live-p proc)) (delete-process proc))
+      (when-let* ((timer (and session (healr-session-timer session))))
+        (cancel-timer timer))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+(ert-deftest healr-test-status-fleet-entries ()
+  (let ((healr--sessions (make-hash-table :test 'equal))
+        (live (healr-test--fake-session :root "/tmp/alpha/" :name "main"))
+        (dead (healr-test--fake-session :root "/tmp/beta/" :name "old"
+                                        :state 'dead)))
+    (unwind-protect
+        (progn
+          (puthash (healr-session--key "/tmp/alpha/" "claude" "main")
+                   live healr--sessions)
+          (puthash (healr-session--key "/tmp/beta/" "claude" "old")
+                   dead healr--sessions)
+          (let* ((entries (healr-list--entries))
+                 (live-entry (assoc (healr-session--key "/tmp/alpha/" "claude" "main")
+                                    entries))
+                 (dead-entry (assoc (healr-session--key "/tmp/beta/" "claude" "old")
+                                    entries)))
+            (should (= (length entries) 2))
+            (let ((cols (nth 1 live-entry)))
+              (should (equal (elt cols 0) "alpha"))
+              (should (equal (elt cols 1) "claude"))
+              (should (equal (elt cols 3) "working")))
+            (let ((cols (nth 1 dead-entry)))
+              (should (equal (elt cols 3) "dead"))
+              (should (equal (elt cols 4) "—")))))
+      (kill-buffer (healr-session-buffer live))
+      (kill-buffer (healr-session-buffer dead)))))
+
+(ert-deftest healr-test-status-fleet-kill-at-point ()
+  (let ((healr--sessions (make-hash-table :test 'equal))
+        (session (healr-test--fake-session :root "/tmp/alpha/"))
+        (killed nil))
+    (unwind-protect
+        (progn
+          (puthash (healr-session--key "/tmp/alpha/" "claude" "main")
+                   session healr--sessions)
+          (with-current-buffer (get-buffer-create " *healr-test-fleet*")
+            (healr-list-mode)
+            (tabulated-list-print)
+            (goto-char (point-min))
+            (cl-letf (((symbol-function 'healr-session-kill)
+                       (lambda (s) (setq killed s)))
+                      ((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+              (healr-list-kill))
+            (should (eq killed session))))
+      (kill-buffer (healr-session-buffer session))
+      (when-let* ((buf (get-buffer " *healr-test-fleet*")))
+        (kill-buffer buf)))))
+
 ;;; healr-test.el ends here
