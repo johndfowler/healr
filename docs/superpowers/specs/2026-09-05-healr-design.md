@@ -14,6 +14,15 @@ and the previously parked alternatives (agent-shell, agent-vterm, pilish) were
 duplicate *launchers* for a single tool. healr is not a launcher for one agent;
 it is the registry, status board, and context-sending layer for all of them.
 
+## Identity
+
+healr is the child of three tools its author admires: herdr (it herds an
+agent fleet), Doom Emacs (it is Doom-native in idiom), and
+codersauce/red (like `red`, it keeps per-project sessions warm and one
+keystroke away). red's attach/detach persistence is explicitly out of
+scope for v1 but is the conceptual north star for any later
+persistence work.
+
 ## Context and constraints
 
 - Emacs 29.4, Doom Emacs (master). Package targets Emacs 29.1+.
