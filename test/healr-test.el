@@ -100,4 +100,122 @@
         (should-not (healr-term-alive-p buf))
       (kill-buffer buf))))
 
+
+(require 'healr-session)
+
+(defmacro healr-test--with-fake-term (&rest body)
+  "Run BODY with `healr-term-make' and `executable-find' stubbed."
+  (declare (indent 0))
+  `(let ((term-calls 0))
+     (cl-letf (((symbol-function 'healr-term-make)
+                (lambda (buffer-name _agent _dir)
+                  (setq term-calls (1+ term-calls))
+                  (get-buffer-create buffer-name)))
+               ((symbol-function 'executable-find)
+                (lambda (_cmd &optional _remote) "/usr/bin/true")))
+       ,@body)))
+
+(ert-deftest healr-test-session-buffer-name ()
+  (should (equal (healr-session-buffer-name "/tmp/proj/" "claude" "main")
+                 "*healr:proj:claude:main*")))
+
+(ert-deftest healr-test-session-buffer-name-collision ()
+  (let ((healr--sessions (make-hash-table :test 'equal))
+        (buf (get-buffer-create "*healr:proj:claude:main*")))
+    (unwind-protect
+        (progn
+          (puthash (healr-session--key "/a/proj/" "claude" "main")
+                   (healr-session--create :root "/a/proj/" :agent "claude"
+                                          :name "main" :buffer buf)
+                   healr--sessions)
+          (should (equal (healr-session--buffer-name-for "/a/proj/" "claude" "main")
+                         "*healr:proj:claude:main*"))
+          (should (string-match-p
+                   "\\`\\*healr:proj-[0-9a-f]\\{8\\}:claude:main\\*\\'"
+                   (healr-session--buffer-name-for "/b/proj/" "claude" "main"))))
+      (kill-buffer buf))))
+
+(ert-deftest healr-test-session-get-or-create-caches ()
+  (let ((healr--sessions (make-hash-table :test 'equal))
+        (healr-agent-list '(("claude" :command "claude"))))
+    (healr-test--with-fake-term
+      (unwind-protect
+          (let ((first (healr-session-get-or-create "claude" "/tmp/proj/"))
+                (second (healr-session-get-or-create "claude" "/tmp/proj/")))
+            (should (eq first second))
+            (should (= term-calls 1))
+            (should (equal (healr-session-name first) "main"))
+            (should (healr-session-live-p first)))
+        (mapc #'healr-session-kill (healr-session-list))))))
+
+(ert-deftest healr-test-session-unknown-agent ()
+  (let ((healr--sessions (make-hash-table :test 'equal))
+        (healr-agent-list nil))
+    (should-error (healr-session-get-or-create "nope" "/tmp/proj/")
+                  :type 'user-error)))
+
+(ert-deftest healr-test-session-missing-binary ()
+  (let ((healr--sessions (make-hash-table :test 'equal)))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (_cmd &optional _remote) nil)))
+      (should-error
+       (healr-session-create (healr-agent--normalize "ghost" nil) "/tmp/proj/" "main")
+       :type 'user-error))))
+
+(ert-deftest healr-test-session-rename ()
+  (let ((healr--sessions (make-hash-table :test 'equal))
+        (healr-agent-list '(("claude" :command "claude"))))
+    (healr-test--with-fake-term
+      (unwind-protect
+          (let ((session (healr-session-get-or-create "claude" "/tmp/proj/")))
+            (healr-session-rename session "work")
+            (should-not (healr-session-get "/tmp/proj/" "claude" "main"))
+            (should (eq (healr-session-get "/tmp/proj/" "claude" "work") session))
+            (should (equal (buffer-name (healr-session-buffer session))
+                           "*healr:proj:claude:work*"))
+            (should-error (healr-session-rename session "work") :type 'user-error))
+        (mapc #'healr-session-kill (healr-session-list))))))
+
+(ert-deftest healr-test-session-kill ()
+  (let ((healr--sessions (make-hash-table :test 'equal))
+        (healr-agent-list '(("claude" :command "claude"))))
+    (healr-test--with-fake-term
+      (let* ((session (healr-session-get-or-create "claude" "/tmp/proj/"))
+             (buf (healr-session-buffer session)))
+        (healr-session-kill session)
+        (should-not (healr-session-get "/tmp/proj/" "claude" "main"))
+        (should-not (buffer-live-p buf))))))
+
+(ert-deftest healr-test-session-restart-only-when-dead ()
+  (let ((healr--sessions (make-hash-table :test 'equal))
+        (healr-agent-list '(("claude" :command "claude"))))
+    (healr-test--with-fake-term
+      (unwind-protect
+          (let ((session (healr-session-get-or-create "claude" "/tmp/proj/")))
+            (should-error (healr-session-restart session) :type 'user-error)
+            (setf (healr-session-state session) 'dead)
+            (let* ((hook-ran 0)
+                   (healr-session-created-hook
+                    (list (lambda (_s) (setq hook-ran (1+ hook-ran))))))
+              (healr-session-restart session)
+              (should (= hook-ran 1))
+              (should (eq (healr-session-state session) 'working))
+              (should (= term-calls 2))))
+        (mapc #'healr-session-kill (healr-session-list))))))
+
+(ert-deftest healr-test-session-toggle ()
+  (let ((healr--sessions (make-hash-table :test 'equal))
+        (healr-agent-list '(("claude" :command "claude"))))
+    (healr-test--with-fake-term
+      (unwind-protect
+          (let ((session (healr-session-get-or-create "claude" "/tmp/proj/"))
+                (popped nil))
+            (cl-letf (((symbol-function 'get-buffer-window)
+                       (lambda (&rest _) nil))
+                      ((symbol-function 'pop-to-buffer)
+                       (lambda (buf &rest _) (setq popped buf))))
+              (healr-session-toggle session)
+              (should (eq popped (healr-session-buffer session)))))
+        (mapc #'healr-session-kill (healr-session-list))))))
+
 ;;; healr-test.el ends here
