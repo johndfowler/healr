@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect x="56" y="56" width="400" height="400" rx="72" fill="#22262b"/>
+  <!-- shepherd's crook -->
+  <path d="M256 408 L256 218 A78 78 0 1 1 178 140"
+        fill="none" stroke="#e14c3b" stroke-width="30" stroke-linecap="round"/>
+  <!-- prompt caught in the hook -->
+  <path d="M204 122 L232 150 L204 178" fill="none" stroke="#e8e6e1" stroke-width="17" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="246" y="166" width="34" height="17" rx="4" fill="#e8e6e1"/>
+</svg>

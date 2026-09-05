@@ -1,3 +1,5 @@
+<img src="assets/logo.png" alt="healr logo — a shepherd's crook catching a terminal prompt" width="128" align="right">
+
 # healr
 
 A fleet layer for agentic CLI tools in Emacs — the child of herdr,
