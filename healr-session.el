@@ -28,6 +28,7 @@
   buffer        ; terminal buffer
   state         ; `working', `idle' or `dead'
   last-output   ; float time of last terminal output
+  recent-output ; tail of recent terminal output (prompt-regexp window)
   timer)        ; idle timer or nil
 
 (defun healr-session--key (root agent name)
@@ -92,6 +93,9 @@ Signals `user-error' when the agent's command is not on PATH."
   (unless (executable-find (plist-get agent :command))
     (user-error "healr: `%s' not found on PATH (agent `%s')"
                 (plist-get agent :command) (plist-get agent :name)))
+  (when (healr-session-get root (plist-get agent :name) name)
+    (user-error "healr: session `%s' already exists for %s"
+                name (plist-get agent :name)))
   (let* ((agent-name (plist-get agent :name))
          (buffer (healr-term-make
                   (healr-session--buffer-name-for root agent-name name)
@@ -117,6 +121,8 @@ NAME defaults to \"main\"."
   "Rename SESSION to NEW-NAME."
   (let ((root (healr-session-root session))
         (agent (healr-session-agent session)))
+    (when (string-empty-p new-name)
+      (user-error "healr: session name must not be empty"))
     (when (healr-session-get root agent new-name)
       (user-error "healr: session `%s' already exists for %s" new-name agent))
     (remhash (healr-session--key root agent (healr-session-name session))
@@ -133,10 +139,13 @@ NAME defaults to \"main\"."
 (defun healr-session-kill (session)
   "Kill SESSION's process and buffer and remove it from the registry."
   (when-let* ((timer (healr-session-timer session)))
-    (cancel-timer timer))
+    (cancel-timer timer)
+    (setf (healr-session-timer session) nil))
   (when-let* ((buf (healr-session-buffer session)))
     (when (buffer-live-p buf)
       (when-let* ((proc (get-buffer-process buf)))
+        (set-process-filter proc #'ignore)
+        (set-process-sentinel proc #'ignore)
         (delete-process proc))
       (kill-buffer buf)))
   (remhash (healr-session--key (healr-session-root session)

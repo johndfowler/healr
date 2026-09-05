@@ -106,7 +106,8 @@
 (defmacro healr-test--with-fake-term (&rest body)
   "Run BODY with `healr-term-make' and `executable-find' stubbed."
   (declare (indent 0))
-  `(let ((term-calls 0))
+  `(let ((term-calls 0)
+         (healr-session-created-hook nil))
      (cl-letf (((symbol-function 'healr-term-make)
                 (lambda (buffer-name _agent _dir)
                   (setq term-calls (1+ term-calls))
@@ -424,7 +425,9 @@
          (session (healr-test--fake-session :root "/tmp/proj/"))
          sent popped)
     (unwind-protect
-        (cl-letf (((symbol-function 'healr-session-list)
+        (cl-letf (((symbol-function 'healr-term-alive-p)
+                   (lambda (&rest _) t))
+                  ((symbol-function 'healr-session-list)
                    (lambda (&optional _root) (list session)))
                   ((symbol-function 'healr-term-send-string)
                    (lambda (_buf str) (setq sent str)))
@@ -442,7 +445,9 @@
          (session (healr-test--fake-session :root "/tmp/proj/"))
          sent)
     (unwind-protect
-        (cl-letf (((symbol-function 'healr-session-list)
+        (cl-letf (((symbol-function 'healr-term-alive-p)
+                   (lambda (&rest _) t))
+                  ((symbol-function 'healr-session-list)
                    (lambda (&optional _root) (list session)))
                   ((symbol-function 'healr-term-send-string)
                    (lambda (_buf str) (setq sent str)))
@@ -459,5 +464,144 @@
             (healr-send-dwim)
             (should (equal sent "@src/x.el#L2-3 "))))
       (kill-buffer (healr-session-buffer session)))))
+
+
+;;; Review-hardening regression tests
+
+(ert-deftest healr-test-status-stale-sentinel-ignores-old-process ()
+  (skip-unless (executable-find "cat"))
+  (let ((healr-idle-seconds 3600)
+        (healr-agent-list '(("fake" :command "cat")))
+        (buf1 (generate-new-buffer " *healr-test-stale1*"))
+        (buf2 (generate-new-buffer " *healr-test-stale2*"))
+        proc session)
+    (unwind-protect
+        (progn
+          (setq proc (make-process :name "healr-test-stale" :buffer buf1
+                                   :command '("cat") :connection-type 'pipe
+                                   :noquery t)
+                session (healr-session--create
+                         :root "/tmp/" :agent "fake" :name "main"
+                         :buffer buf1 :state 'dead :last-output 0))
+          (healr-status-attach session)
+          (setf (healr-session-buffer session) buf2)
+          (delete-process proc)
+          (accept-process-output proc 1)
+          (should (eq (healr-session-state session) 'working)))
+      (when (and proc (process-live-p proc)) (delete-process proc))
+      (when-let* ((timer (and session (healr-session-timer session))))
+        (cancel-timer timer))
+      (when (buffer-live-p buf1) (kill-buffer buf1))
+      (when (buffer-live-p buf2) (kill-buffer buf2)))))
+
+(ert-deftest healr-test-status-bad-prompt-regexp-keeps-filter ()
+  (skip-unless (executable-find "cat"))
+  (let ((healr-idle-seconds 3600)
+        (healr-agent-list '(("fake" :command "cat" :prompt-regexp "(")))
+        (buf (generate-new-buffer " *healr-test-badre*"))
+        proc session)
+    (unwind-protect
+        (progn
+          (setq proc (make-process :name "healr-test-badre" :buffer buf
+                                   :command '("cat") :connection-type 'pipe
+                                   :noquery t)
+                session (healr-session--create
+                         :root "/tmp/" :agent "fake" :name "main"
+                         :buffer buf :state 'dead :last-output 0))
+          (healr-status-attach session)
+          (process-send-string proc "hi\n")
+          (accept-process-output proc 1)
+          (should (with-current-buffer buf
+                    (save-excursion
+                      (goto-char (point-min))
+                      (search-forward "hi" nil t)))))
+      (when (and proc (process-live-p proc)) (delete-process proc))
+      (when-let* ((timer (and session (healr-session-timer session))))
+        (cancel-timer timer))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+(ert-deftest healr-test-status-prompt-split-across-chunks ()
+  (let ((healr-idle-seconds 3600)
+        (healr-agent-list '(("fake" :command "cat" :prompt-regexp "PROMPT> ")))
+        (session (healr-test--fake-session :agent "fake")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'healr-list--maybe-refresh) #'ignore))
+          (healr-status--note-output session "blah PROM")
+          (should (eq (healr-session-state session) 'working))
+          (healr-status--note-output session "PT> ")
+          (should (eq (healr-session-state session) 'idle)))
+      (when-let* ((timer (healr-session-timer session))) (cancel-timer timer))
+      (kill-buffer (healr-session-buffer session)))))
+
+(ert-deftest healr-test-status-attach-without-process-marks-dead ()
+  (let ((healr-idle-seconds 3600)
+        (session (healr-test--fake-session)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'healr-list--maybe-refresh) #'ignore))
+          (healr-status-attach session)
+          (should (eq (healr-session-state session) 'dead))
+          (should-not (healr-session-timer session)))
+      (when-let* ((timer (healr-session-timer session))) (cancel-timer timer))
+      (kill-buffer (healr-session-buffer session)))))
+
+(ert-deftest healr-test-session-kill-disarms-watchers ()
+  (skip-unless (executable-find "cat"))
+  (let ((healr-idle-seconds 3600)
+        (healr--sessions (make-hash-table :test 'equal))
+        (healr-agent-list '(("fake" :command "cat")))
+        (buf (generate-new-buffer " *healr-test-killwatch*"))
+        proc session)
+    (unwind-protect
+        (progn
+          (setq proc (make-process :name "healr-test-kw" :buffer buf
+                                   :command '("cat") :connection-type 'pipe
+                                   :noquery t)
+                session (healr-session--create
+                         :root "/tmp/" :agent "fake" :name "main"
+                         :buffer buf :state 'dead :last-output 0))
+          (puthash (healr-session--key "/tmp/" "fake" "main")
+                   session healr--sessions)
+          (healr-status-attach session)
+          (should (healr-session-timer session))
+          (healr-session-kill session)
+          (should-not (healr-session-timer session))
+          (should-not (buffer-live-p buf))
+          (should (= (hash-table-count healr--sessions) 0)))
+      (when (and proc (process-live-p proc)) (delete-process proc))
+      (when-let* ((timer (and session (healr-session-timer session))))
+        (cancel-timer timer))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+(ert-deftest healr-test-send-dwim-skips-process-less-session ()
+  (let* ((healr-project-root-function (lambda () "/tmp/proj/"))
+         (session (healr-test--fake-session :root "/tmp/proj/")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'healr-session-list)
+                   (lambda (&optional _root) (list session))))
+          (with-temp-buffer
+            (setq buffer-file-name "/tmp/proj/x.el")
+            (should-error (healr-send-dwim) :type 'user-error)))
+      (kill-buffer (healr-session-buffer session)))))
+
+(ert-deftest healr-test-session-create-rejects-duplicate ()
+  (let ((healr--sessions (make-hash-table :test 'equal))
+        (healr-agent-list '(("claude" :command "claude"))))
+    (healr-test--with-fake-term
+      (unwind-protect
+          (progn
+            (healr-session-get-or-create "claude" "/tmp/proj/")
+            (should-error
+             (healr-session-create (healr-agent-get "claude") "/tmp/proj/" "main")
+             :type 'user-error))
+        (mapc #'healr-session-kill (healr-session-list))))))
+
+(ert-deftest healr-test-session-rename-rejects-empty ()
+  (let ((healr--sessions (make-hash-table :test 'equal))
+        (healr-agent-list '(("claude" :command "claude"))))
+    (healr-test--with-fake-term
+      (unwind-protect
+          (let ((session (healr-session-get-or-create "claude" "/tmp/proj/")))
+            (should-error (healr-session-rename session "") :type 'user-error))
+        (mapc #'healr-session-kill (healr-session-list))))))
 
 ;;; healr-test.el ends here

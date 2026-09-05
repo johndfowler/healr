@@ -83,8 +83,12 @@ ask which."
   (unless buffer-file-name
     (user-error "healr: current buffer is not visiting a file"))
   (let* ((root (funcall healr-project-root-function))
-         (sessions (seq-filter #'healr-session-live-p
-                               (healr-session-list root))))
+         (sessions (seq-filter
+                    (lambda (session)
+                      (and (healr-session-live-p session)
+                           (healr-term-alive-p
+                            (healr-session-buffer session))))
+                    (healr-session-list root))))
     (unless sessions
       (user-error "healr: no live session in this project — M-x healr first"))
     (let* ((session (if (= 1 (length sessions))

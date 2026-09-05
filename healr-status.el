@@ -42,16 +42,23 @@
 
 (defun healr-status--note-output (session output)
   "Record OUTPUT arriving on SESSION's terminal.
-When the agent's :prompt-regexp matches OUTPUT the session goes idle
-immediately; otherwise it is working and the idle timer re-arms."
+Recent output is kept to a 500-character window; when the agent's
+:prompt-regexp matches the window the session goes idle immediately
+\(matching the window, not just this chunk, so prompts split across
+reads still match).  Otherwise the session is working and the idle
+timer re-arms."
   (setf (healr-session-last-output session) (float-time))
-  (let ((agent (healr-agent-get (healr-session-agent session))))
-    (if (and agent
-             (plist-get agent :prompt-regexp)
-             (string-match-p (plist-get agent :prompt-regexp) output))
-        (healr-status--set session 'idle)
-      (healr-status--set session 'working)
-      (healr-status--arm-timer session))))
+  (let ((window (concat (or (healr-session-recent-output session) "") output)))
+    (when (> (length window) 500)
+      (setq window (substring window (- (length window) 500))))
+    (setf (healr-session-recent-output session) window)
+    (let ((agent (healr-agent-get (healr-session-agent session))))
+      (if (and agent
+               (plist-get agent :prompt-regexp)
+               (string-match-p (plist-get agent :prompt-regexp) window))
+          (healr-status--set session 'idle)
+        (healr-status--set session 'working)
+        (healr-status--arm-timer session)))))
 
 (defun healr-status--mark-dead (session)
   "Mark SESSION dead and stop its idle timer."
@@ -69,7 +76,9 @@ immediately; otherwise it is working and the idle timer re-arms."
     (set-process-filter
      proc
      (lambda (process output)
-       (healr-status--note-output session output)
+       (condition-case nil
+           (healr-status--note-output session output)
+         (error nil))
        (if orig-filter
            (funcall orig-filter process output)
          (internal-default-process-filter process output))))
@@ -78,7 +87,9 @@ immediately; otherwise it is working and the idle timer re-arms."
      (lambda (process event)
        (when orig-sentinel
          (ignore-errors (funcall orig-sentinel process event)))
-       (unless (process-live-p process)
+       (when (and (not (process-live-p process))
+                  (eq (process-buffer process)
+                      (healr-session-buffer session)))
          (healr-status--mark-dead session))))))
 
 (defun healr-status-attach (session)
@@ -90,11 +101,14 @@ the modeline segment.  Suitable for `healr-session-created-hook'."
       (with-current-buffer buf
         (setq healr--buffer-session session
               mode-line-process '((:eval (healr-status--mode-line)))))
-      (setf (healr-session-state session) 'working
-            (healr-session-last-output session) (float-time))
-      (when-let* ((proc (get-buffer-process buf)))
-        (healr-status--wrap-process session proc))
-      (healr-status--arm-timer session))))
+      (if-let* ((proc (get-buffer-process buf)))
+          (progn
+            (setf (healr-session-state session) 'working
+                  (healr-session-last-output session) (float-time)
+                  (healr-session-recent-output session) nil)
+            (healr-status--wrap-process session proc)
+            (healr-status--arm-timer session))
+        (healr-status--mark-dead session)))))
 
 (defun healr-status--mode-line ()
   "Return the modeline segment for the current healr session buffer."
