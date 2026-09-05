@@ -1,4 +1,4 @@
-<img src="assets/logo.png" alt="healr logo — a shepherd's crook catching a terminal prompt" width="128" align="right">
+<img src="assets/logo.png" alt="healr logo — a temple before a banded seventies sunset, prompt in the pediment" width="128" align="right">
 
 # healr
 

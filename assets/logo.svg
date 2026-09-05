@@ -1,9 +1,43 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <rect x="56" y="56" width="400" height="400" rx="72" fill="#22262b"/>
-  <!-- shepherd's crook -->
-  <path d="M256 408 L256 218 A78 78 0 1 1 178 140"
-        fill="none" stroke="#e14c3b" stroke-width="30" stroke-linecap="round"/>
-  <!-- prompt caught in the hook -->
-  <path d="M204 122 L232 150 L204 178" fill="none" stroke="#e8e6e1" stroke-width="17" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="246" y="166" width="34" height="17" rx="4" fill="#e8e6e1"/>
+  <defs>
+    <linearGradient id="sun" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f2c14e"/>
+      <stop offset="0.55" stop-color="#e9763e"/>
+      <stop offset="1" stop-color="#e14c3b"/>
+    </linearGradient>
+    <clipPath id="sunclip">
+      <circle cx="256" cy="212" r="120"/>
+    </clipPath>
+  </defs>
+
+  <!-- banded groovy sun -->
+  <g clip-path="url(#sunclip)">
+    <rect x="96" y="72" width="320" height="280" fill="url(#sun)"/>
+    <g fill="none" stroke="#3a2547" stroke-width="7" opacity="0.9">
+      <path d="M96 150 q 20 -8 40 0 t 40 0 t 40 0 t 40 0 t 40 0 t 40 0 t 40 0 t 40 0"/>
+      <path d="M96 196 q 20 -8 40 0 t 40 0 t 40 0 t 40 0 t 40 0 t 40 0 t 40 0 t 40 0"/>
+      <path d="M96 242 q 20 -8 40 0 t 40 0 t 40 0 t 40 0 t 40 0 t 40 0 t 40 0 t 40 0"/>
+      <path d="M96 288 q 20 -8 40 0 t 40 0 t 40 0 t 40 0 t 40 0 t 40 0 t 40 0 t 40 0"/>
+    </g>
+  </g>
+
+  <!-- temple silhouette -->
+  <g fill="#3a2547" stroke="#f4f2ee" stroke-width="4" stroke-linejoin="round">
+    <!-- pediment -->
+    <path d="M142 238 L256 158 L370 238 Z"/>
+    <!-- architrave -->
+    <rect x="146" y="238" width="220" height="18" rx="4"/>
+    <!-- columns (slightly tapered) -->
+    <path d="M164 260 L160 372 L186 372 L182 260 Z"/>
+    <path d="M216 260 L212 372 L238 372 L234 260 Z"/>
+    <path d="M268 260 L264 372 L290 372 L286 260 Z"/>
+    <path d="M320 260 L316 372 L342 372 L338 260 Z"/>
+    <!-- steps, wavy edges -->
+    <path d="M140 372 h 232 q 6 0 6 8 q 0 8 -6 8 h -232 q -6 0 -6 -8 q 0 -8 6 -8 Z"/>
+    <path d="M124 392 h 264 q 8 0 10 9 q 2 9 -6 9 h -272 q -8 0 -10 -9 q -2 -9 6 -9 Z"/>
+  </g>
+
+  <!-- prompt in the pediment -->
+  <path d="M236 196 L252 212 L236 228" fill="none" stroke="#f4f2ee" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="262" y="220" width="20" height="10" rx="2.5" fill="#e14c3b"/>
 </svg>
