@@ -67,6 +67,14 @@ timer re-arms."
     (setf (healr-session-timer session) nil))
   (healr-status--set session 'dead))
 
+(defun healr-status--mark-detached (session)
+  "Mark SESSION detached and stop its idle timer.
+The agent keeps running inside tmux; no Emacs buffer is attached."
+  (when-let* ((timer (healr-session-timer session)))
+    (cancel-timer timer)
+    (setf (healr-session-timer session) nil))
+  (healr-status--set session 'detached))
+
 ;;; Process watching
 
 (defun healr-status--wrap-process (session proc)
@@ -87,10 +95,18 @@ timer re-arms."
      (lambda (process event)
        (when orig-sentinel
          (ignore-errors (funcall orig-sentinel process event)))
-       (when (and (not (process-live-p process))
-                  (eq (process-buffer process)
-                      (healr-session-buffer session)))
-         (healr-status--mark-dead session))))))
+       (unless (process-live-p process)
+         (if-let* ((tmux-name (healr-session-tmux session)))
+             (let ((current (and (buffer-live-p (healr-session-buffer session))
+                                 (get-buffer-process
+                                  (healr-session-buffer session)))))
+               (when (or (not current) (eq process current))
+                 (if (healr-term--tmux-alive-p tmux-name)
+                     (healr-status--mark-detached session)
+                   (healr-status--mark-dead session))))
+           (when (eq (process-buffer process)
+                     (healr-session-buffer session))
+             (healr-status--mark-dead session))))))))
 
 (defun healr-status-attach (session)
   "Attach status tracking to SESSION; also used after restarts.
@@ -115,6 +131,40 @@ the modeline segment.  Suitable for `healr-session-created-hook'."
   (when-let* ((session healr--buffer-session))
     (format " [%s:%s]" (healr-session-agent session)
             (healr-session-state session))))
+
+;;; Rehydration
+
+(defun healr-rehydrate ()
+  "Rebuild the registry from live tmux sessions and sidecar metadata.
+Live `healr_*' tmux sessions with a readable sidecar and no registry
+entry are added as `detached' (no buffer).  Registry entries already
+`detached' whose tmux session has vanished become `dead'."
+  (interactive)
+  (let ((live (healr-session--live-tmux-sessions)))
+    (dolist (tmux-name live)
+      (let ((meta (healr-session--read-sidecar tmux-name)))
+        (when (and meta
+                   (not (healr-session-get (plist-get meta :root)
+                                           (plist-get meta :agent)
+                                           (plist-get meta :name))))
+          (puthash (healr-session--key (plist-get meta :root)
+                                       (plist-get meta :agent)
+                                       (plist-get meta :name))
+                   (healr-session--create
+                    :root (plist-get meta :root)
+                    :agent (plist-get meta :agent)
+                    :name (plist-get meta :name)
+                    :buffer nil
+                    :state 'detached
+                    :last-output (float-time)
+                    :tmux tmux-name)
+                   healr--sessions))))
+    (dolist (session (healr-session-list))
+      (when (and (eq (healr-session-state session) 'detached)
+                 (healr-session-tmux session)
+                 (not (member (healr-session-tmux session) live)))
+        (healr-status--set session 'dead)))
+    (healr-session-list)))
 
 ;;; Fleet buffer
 
@@ -167,11 +217,20 @@ the modeline segment.  Suitable for `healr-session-created-hook'."
 (keymap-set healr-list-mode-map "r" #'healr-list-restart)
 (keymap-set healr-list-mode-map "R" #'healr-list-rename)
 (keymap-set healr-list-mode-map "g" #'healr-list-refresh)
+(keymap-set healr-list-mode-map "d" #'healr-list-detach)
 
 (defun healr-list-refresh ()
-  "Recompute the fleet buffer."
+  "Recompute the fleet buffer, rehydrating from tmux first."
   (interactive nil healr-list-mode)
+  (healr-rehydrate)
   (tabulated-list-print t))
+
+(defun healr-list-detach ()
+  "Detach the warm session at point; the agent keeps running."
+  (interactive nil healr-list-mode)
+  (when-let* ((session (healr-list--session-at-point)))
+    (healr-session-detach session)
+    (healr-list-refresh)))
 
 (defun healr-list-jump ()
   "Pop to the session at point."
@@ -213,6 +272,7 @@ the modeline segment.  Suitable for `healr-session-created-hook'."
 (defun healr-list ()
   "Display the healr fleet buffer."
   (interactive)
+  (healr-rehydrate)
   (let ((buf (get-buffer-create healr-list-buffer-name)))
     (with-current-buffer buf
       (healr-list-mode)

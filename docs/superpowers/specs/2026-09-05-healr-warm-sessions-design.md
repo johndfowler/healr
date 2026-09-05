@@ -104,14 +104,16 @@ New actions:
   `healr-session-detach`; `healr-rehydrate`; create/kill/restart/toggle
   updated as above.
 - `healr-status.el`: for tmux-backed sessions the wrapped sentinel
-  first confirms the dying process is the session's CURRENT client —
-  `(eq process (get-buffer-process (healr-session-buffer session)))`
-  when the buffer is live, or unconditionally when the buffer is gone —
-  and only then branches on `healr-term--tmux-alive-p`: alive →
-  `detached`, gone → `dead`. The process-identity rule is what keeps a
-  deferred old-client sentinel from clobbering a freshly reattached or
-  restarted session. Fleet `d` key; `detached` appears in the State
-  column like any state.
+  acts only when the dying process is the session's current client —
+  where "current" means the session buffer is live and has NO live
+  process of its own, or its process IS the dying one. (Emacs clears
+  the buffer-process association on exit, so identity against
+  `get-buffer-process` cannot be used: a dead process has no
+  association, while a buffer with a DIFFERENT live process means a
+  newer attachment exists and the stale sentinel must be ignored.)
+  Only then does it branch on `healr-term--tmux-alive-p`: alive →
+  `detached`, gone → `dead`. Fleet `d` key; `detached` appears in the
+  State column like any state.
 - `healr.el`: dispatch runs `healr-rehydrate` before lookup so a warm
   `main` session reattaches instead of spawning a duplicate.
 

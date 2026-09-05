@@ -803,7 +803,7 @@ Append to `test/healr-test.el`:
                          :buffer buf :state 'dead :last-output 0
                          :tmux "healr_fake_main_aaaaaaaa"))
           (healr-status-attach session)
-          (delete-process proc)
+          (process-send-eof proc)
           (accept-process-output proc 1)
           (should (eq (healr-session-state session) 'dead)))
       (when (and proc (process-live-p proc)) (delete-process proc))
@@ -817,7 +817,7 @@ Append to `test/healr-test.el`:
         (healr-agent-list '(("fake" :command "cat")))
         (buf1 (generate-new-buffer " *healr-test-ws1*"))
         (buf2 (generate-new-buffer " *healr-test-ws2*"))
-        proc session)
+        proc proc2 session)
     (unwind-protect
         (cl-letf (((symbol-function 'healr-term--tmux-alive-p)
                    (lambda (_) t))
@@ -825,6 +825,9 @@ Append to `test/healr-test.el`:
           (setq proc (make-process :name "healr-test-ws" :buffer buf1
                                    :command '("cat") :connection-type 'pipe
                                    :noquery t)
+                proc2 (make-process :name "healr-test-ws2" :buffer buf2
+                                    :command '("cat") :connection-type 'pipe
+                                    :noquery t)
                 session (healr-session--create
                          :root "/tmp/" :agent "fake" :name "main"
                          :buffer buf1 :state 'dead :last-output 0
@@ -835,6 +838,7 @@ Append to `test/healr-test.el`:
           (accept-process-output proc 1)
           (should (eq (healr-session-state session) 'working)))
       (when (and proc (process-live-p proc)) (delete-process proc))
+      (when (and proc2 (process-live-p proc2)) (delete-process proc2))
       (when-let* ((timer (and session (healr-session-timer session))))
         (cancel-timer timer))
       (when (buffer-live-p buf1) (kill-buffer buf1))
@@ -953,13 +957,13 @@ Replace the sentinel inside `healr-status--wrap-process` with:
          (ignore-errors (funcall orig-sentinel process event)))
        (unless (process-live-p process)
          (if-let* ((tmux-name (healr-session-tmux session)))
-             (when (or (not (buffer-live-p (healr-session-buffer session)))
-                       (eq process
-                           (get-buffer-process
-                            (healr-session-buffer session))))
-               (if (healr-term--tmux-alive-p tmux-name)
-                   (healr-status--mark-detached session)
-                 (healr-status--mark-dead session)))
+             (let ((current (and (buffer-live-p (healr-session-buffer session))
+                                 (get-buffer-process
+                                  (healr-session-buffer session)))))
+               (when (or (not current) (eq process current))
+                 (if (healr-term--tmux-alive-p tmux-name)
+                     (healr-status--mark-detached session)
+                   (healr-status--mark-dead session))))
            (when (eq (process-buffer process)
                      (healr-session-buffer session))
              (healr-status--mark-dead session)))))))

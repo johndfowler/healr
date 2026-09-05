@@ -915,4 +915,189 @@
                              :tmux "healr_fake_main_aaaaaaaa"))
      :type 'user-error)))
 
+
+;;; Detached state, rehydrate, fleet detach (Task 3)
+
+(ert-deftest healr-test-status-mark-detached ()
+  (let ((healr-idle-seconds 3600)
+        (healr-agent-list nil)
+        (session (healr-test--fake-session)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'healr-list--maybe-refresh) #'ignore))
+          (healr-status--note-output session "x")
+          (should (healr-session-timer session))
+          (healr-status--mark-detached session)
+          (should (eq (healr-session-state session) 'detached))
+          (should-not (healr-session-timer session)))
+      (when-let* ((timer (healr-session-timer session))) (cancel-timer timer))
+      (kill-buffer (healr-session-buffer session)))))
+
+(ert-deftest healr-test-status-sentinel-warm-detached ()
+  (skip-unless (executable-find "cat"))
+  (let ((healr-idle-seconds 3600)
+        (healr-agent-list '(("fake" :command "cat")))
+        (buf (generate-new-buffer " *healr-test-wd*"))
+        proc session)
+    (unwind-protect
+        (cl-letf (((symbol-function 'healr-term--tmux-alive-p)
+                   (lambda (_) t))
+                  ((symbol-function 'healr-list--maybe-refresh) #'ignore))
+          (setq proc (make-process :name "healr-test-wd" :buffer buf
+                                   :command '("cat") :connection-type 'pipe
+                                   :noquery t)
+                session (healr-session--create
+                         :root "/tmp/" :agent "fake" :name "main"
+                         :buffer buf :state 'dead :last-output 0
+                         :tmux "healr_fake_main_aaaaaaaa"))
+          (healr-status-attach session)
+          (kill-buffer buf)
+          (accept-process-output proc 1)
+          (should (eq (healr-session-state session) 'detached)))
+      (when (and proc (process-live-p proc)) (delete-process proc))
+      (when-let* ((timer (and session (healr-session-timer session))))
+        (cancel-timer timer))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+(ert-deftest healr-test-status-sentinel-warm-dead ()
+  (skip-unless (executable-find "cat"))
+  (let ((healr-idle-seconds 3600)
+        (healr-agent-list '(("fake" :command "cat")))
+        (buf (generate-new-buffer " *healr-test-wx*"))
+        proc session)
+    (unwind-protect
+        (cl-letf (((symbol-function 'healr-term--tmux-alive-p)
+                   (lambda (_) nil))
+                  ((symbol-function 'healr-list--maybe-refresh) #'ignore))
+          (setq proc (make-process :name "healr-test-wx" :buffer buf
+                                   :command '("cat") :connection-type 'pipe
+                                   :noquery t)
+                session (healr-session--create
+                         :root "/tmp/" :agent "fake" :name "main"
+                         :buffer buf :state 'dead :last-output 0
+                         :tmux "healr_fake_main_aaaaaaaa"))
+          (healr-status-attach session)
+          (process-send-eof proc)
+          (accept-process-output proc 1)
+          (should (eq (healr-session-state session) 'dead)))
+      (when (and proc (process-live-p proc)) (delete-process proc))
+      (when-let* ((timer (and session (healr-session-timer session))))
+        (cancel-timer timer))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+(ert-deftest healr-test-status-sentinel-warm-stale-process ()
+  (skip-unless (executable-find "cat"))
+  (let ((healr-idle-seconds 3600)
+        (healr-agent-list '(("fake" :command "cat")))
+        (buf1 (generate-new-buffer " *healr-test-ws1*"))
+        (buf2 (generate-new-buffer " *healr-test-ws2*"))
+        proc proc2 session)
+    (unwind-protect
+        (cl-letf (((symbol-function 'healr-term--tmux-alive-p)
+                   (lambda (_) t))
+                  ((symbol-function 'healr-list--maybe-refresh) #'ignore))
+          (setq proc (make-process :name "healr-test-ws" :buffer buf1
+                                   :command '("cat") :connection-type 'pipe
+                                   :noquery t)
+                proc2 (make-process :name "healr-test-ws2" :buffer buf2
+                                    :command '("cat") :connection-type 'pipe
+                                    :noquery t)
+                session (healr-session--create
+                         :root "/tmp/" :agent "fake" :name "main"
+                         :buffer buf1 :state 'dead :last-output 0
+                         :tmux "healr_fake_main_aaaaaaaa"))
+          (healr-status-attach session)
+          (setf (healr-session-buffer session) buf2)
+          (delete-process proc)
+          (accept-process-output proc 1)
+          (should (eq (healr-session-state session) 'working)))
+      (when (and proc (process-live-p proc)) (delete-process proc))
+      (when (and proc2 (process-live-p proc2)) (delete-process proc2))
+      (when-let* ((timer (and session (healr-session-timer session))))
+        (cancel-timer timer))
+      (when (buffer-live-p buf1) (kill-buffer buf1))
+      (when (buffer-live-p buf2) (kill-buffer buf2)))))
+
+(ert-deftest healr-test-rehydrate-adds-detached ()
+  (let ((healr--sessions (make-hash-table :test 'equal)))
+    (healr-test--with-temp-metadata
+      (cl-letf (((symbol-function 'healr-session--live-tmux-sessions)
+                 (lambda () '("healr_fake_main_aaaaaaaa" "healr_fake_gone_bbbbbbbb")))
+                ((symbol-function 'healr-list--maybe-refresh) #'ignore))
+        (healr-session--write-sidecar "healr_fake_main_aaaaaaaa"
+                                      "/tmp/proj/" "fake" "main" 'eat)
+        (puthash (healr-session--key "/tmp/gone/" "fake" "old")
+                 (healr-session--create
+                  :root "/tmp/gone/" :agent "fake" :name "old"
+                  :buffer nil :state 'detached :last-output 0
+                  :tmux "healr_fake_old_cccccccc")
+                 healr--sessions)
+        (healr-rehydrate)
+        (let ((added (healr-session-get "/tmp/proj/" "fake" "main")))
+          (should added)
+          (should (eq (healr-session-state added) 'detached))
+          (should (equal (healr-session-tmux added)
+                         "healr_fake_main_aaaaaaaa"))
+          (should-not (healr-session-buffer added)))
+        (let ((gone (healr-session-get "/tmp/gone/" "fake" "old")))
+          (should (eq (healr-session-state gone) 'dead)))))))
+
+(ert-deftest healr-test-rehydrate-skips-existing-and-no-sidecar ()
+  (let ((healr--sessions (make-hash-table :test 'equal)))
+    (healr-test--with-temp-metadata
+      (cl-letf (((symbol-function 'healr-session--live-tmux-sessions)
+                 (lambda () '("healr_fake_main_aaaaaaaa" "healr_orphan_dddddddd")))
+                ((symbol-function 'healr-list--maybe-refresh) #'ignore))
+        (puthash (healr-session--key "/tmp/proj/" "fake" "main")
+                 (healr-session--create
+                  :root "/tmp/proj/" :agent "fake" :name "main"
+                  :buffer nil :state 'working :last-output 0
+                  :tmux "healr_fake_main_aaaaaaaa")
+                 healr--sessions)
+        (healr-rehydrate)
+        (should (= (hash-table-count healr--sessions) 1))
+        (should (eq (healr-session-state
+                     (healr-session-get "/tmp/proj/" "fake" "main"))
+                    'working))))))
+
+(ert-deftest healr-test-fleet-detach-at-point ()
+  (let ((healr--sessions (make-hash-table :test 'equal))
+        (session (healr-session--create
+                  :root "/tmp/alpha/" :agent "fake" :name "main"
+                  :buffer (get-buffer-create " *healr-test-fd*")
+                  :state 'working :last-output 0
+                  :tmux "healr_fake_main_aaaaaaaa"))
+        (detached nil))
+    (unwind-protect
+        (progn
+          (puthash (healr-session--key "/tmp/alpha/" "fake" "main")
+                   session healr--sessions)
+          (with-current-buffer (get-buffer-create " *healr-test-fleetd*")
+            (healr-list-mode)
+            (tabulated-list-print)
+            (goto-char (point-min))
+            (cl-letf (((symbol-function 'healr-session-detach)
+                       (lambda (s) (setq detached s)))
+                      ((symbol-function 'healr-rehydrate) #'ignore))
+              (healr-list-detach))
+            (should (eq detached session))))
+      (kill-buffer (healr-session-buffer session))
+      (when-let* ((buf (get-buffer " *healr-test-fleetd*")))
+        (kill-buffer buf)))))
+
+(ert-deftest healr-test-dispatch-rehydrates-first ()
+  (let ((healr-project-root-function (lambda () "/tmp/proj/"))
+        (rehydrated 0)
+        (fake (healr-test--fake-session :root "/tmp/proj/")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'healr-rehydrate)
+                   (lambda () (setq rehydrated (1+ rehydrated))))
+                  ((symbol-function 'completing-read)
+                   (lambda (&rest _) "claude"))
+                  ((symbol-function 'healr-session-get-or-create)
+                   (lambda (&rest _) fake))
+                  ((symbol-function 'healr-session-toggle) #'ignore))
+          (call-interactively #'healr)
+          (should (= rehydrated 1))))
+      (kill-buffer (healr-session-buffer fake))))
+
 ;;; healr-test.el ends here

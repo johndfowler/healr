@@ -59,6 +59,7 @@ Only markers present at ROOT whose agent is configured in
      (list (completing-read
             (if default (format "Agent (%s): " default) "Agent: ")
             (healr-agent-names) nil t nil nil default))))
+  (healr-rehydrate)
   (healr-session-toggle
    (healr-session-get-or-create agent (funcall healr-project-root-function))))
 
@@ -73,6 +74,7 @@ Only markers present at ROOT whose agent is configured in
            (read-string "Session name: "))))
   (when (string-empty-p name)
     (user-error "healr: session name must not be empty"))
+  (healr-rehydrate)
   (let ((root (funcall healr-project-root-function)))
     (when (healr-session-get root agent name)
       (user-error "healr: session `%s' already exists for %s" name agent))
