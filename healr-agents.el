@@ -20,6 +20,9 @@ Plist keys:
   :env            alist of (NAME . VALUE) extra environment variables
   :prompt-regexp  optional regexp matching the agent's input prompt;
                   a match in terminal output marks the session idle at once
+  :blocked-regexp optional regexp matching the agent's blocked screens
+                  (permission prompts, y/n questions); a match in the
+                  terminal buffer's tail marks the session blocked
   :backend        optional `eat' or `vterm', overriding
                   `healr-terminal-backend'"
   :type '(alist :key-type (string :tag "Name")
@@ -35,6 +38,7 @@ Plist keys:
                 :args (plist-get spec :args)
                 :env (plist-get spec :env)
                 :prompt-regexp (plist-get spec :prompt-regexp)
+                :blocked-regexp (plist-get spec :blocked-regexp)
                 :backend (plist-get spec :backend))
           (when (plist-member spec :persist)
             (list :persist (plist-get spec :persist)))))

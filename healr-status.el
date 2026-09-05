@@ -14,6 +14,23 @@
   :type 'number
   :group 'healr)
 
+(defcustom healr-status-tail-lines 12
+  "Lines of terminal-buffer tail matched against agents' :blocked-regexp."
+  :type 'number
+  :group 'healr)
+
+(defun healr-status--buffer-tail (buffer &optional lines)
+  "Return the last LINES of BUFFER as a string, or nil when it is dead.
+LINES defaults to `healr-status-tail-lines'."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (save-excursion
+        (save-restriction
+          (widen)
+          (goto-char (point-max))
+          (forward-line (- (or lines healr-status-tail-lines)))
+                    (buffer-substring-no-properties (point) (point-max)))))))
+
 (defvar-local healr--buffer-session nil
   "The `healr-session' struct this buffer belongs to.")
 
@@ -52,13 +69,21 @@ timer re-arms."
     (when (> (length window) 500)
       (setq window (substring window (- (length window) 500))))
     (setf (healr-session-recent-output session) window)
-    (let ((agent (healr-agent-get (healr-session-agent session))))
-      (if (and agent
-               (plist-get agent :prompt-regexp)
-               (string-match-p (plist-get agent :prompt-regexp) window))
-          (healr-status--set session 'idle)
+    (let* ((agent (healr-agent-get (healr-session-agent session)))
+           (blocked-re (and agent (plist-get agent :blocked-regexp)))
+           (tail (and blocked-re
+                      (healr-status--buffer-tail
+                       (healr-session-buffer session)))))
+      (cond
+       ((and blocked-re tail (string-match-p blocked-re tail))
+        (healr-status--mark-blocked session))
+       ((and agent
+             (plist-get agent :prompt-regexp)
+             (string-match-p (plist-get agent :prompt-regexp) window))
+        (healr-status--set session 'idle))
+       (t
         (healr-status--set session 'working)
-        (healr-status--arm-timer session)))))
+        (healr-status--arm-timer session))))))
 
 (defun healr-status--mark-dead (session)
   "Mark SESSION dead and stop its idle timer."
@@ -74,6 +99,14 @@ The agent keeps running inside tmux; no Emacs buffer is attached."
     (cancel-timer timer)
     (setf (healr-session-timer session) nil))
   (healr-status--set session 'detached))
+
+(defun healr-status--mark-blocked (session)
+  "Mark SESSION blocked and stop its idle timer.
+The agent is waiting on the user (permission prompt, y/n question)."
+  (when-let* ((timer (healr-session-timer session)))
+    (cancel-timer timer)
+    (setf (healr-session-timer session) nil))
+  (healr-status--set session 'blocked))
 
 ;;; Process watching
 
@@ -188,7 +221,11 @@ entry are added as `detached' (no buffer).  Registry entries already
                                            (float-time)))))))))
        (list (healr-session--key root agent name)
              (vector (file-name-nondirectory (directory-file-name root))
-                     agent name (symbol-name state) idle))))
+                     agent name
+                     (if (eq state 'blocked)
+                         (propertize (symbol-name state) 'face 'error)
+                       (symbol-name state))
+                     idle))))
    (healr-session-list)))
 
 (defun healr-list--maybe-refresh ()

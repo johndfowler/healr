@@ -43,7 +43,7 @@ Append to `test/healr-test.el`:
 ```elisp
 ;;; Blocked state, attached sessions (Task 1)
 
-(defun healr-test--session-with-tail (tail-text &key (agent "claude"))
+(cl-defun healr-test--session-with-tail (tail-text &key (agent "claude"))
   "Return a fake session whose buffer contains TAIL-TEXT."
   (let ((session (healr-test--fake-session :agent agent)))
     (with-current-buffer (healr-session-buffer session)
@@ -61,7 +61,7 @@ Append to `test/healr-test.el`:
         (let ((tail (healr-status--buffer-tail buf 5)))
           (should (string-match-p "tail marker" tail))
           (should (string-match-p "line 49" tail))
-          (should-not (string-match-p "line 40" tail))))
+          (should-not (string-match-p "line 40" tail)))
       (kill-buffer buf)))
   (should-not (healr-status--buffer-tail (get-buffer " *nonexistent*"))))
 
@@ -174,7 +174,7 @@ LINES defaults to `healr-status-tail-lines'."
           (widen)
           (goto-char (point-max))
           (forward-line (- (or lines healr-status-tail-lines)))
-          (buffer-substring-no-properties (point) (point-max)))))))
+                    (buffer-substring-no-properties (point) (point-max))))))
 ```
 
 Replace `healr-status--note-output` with:

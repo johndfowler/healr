@@ -1128,4 +1128,96 @@
         (cancel-timer timer))
       (when (buffer-live-p buf) (kill-buffer buf)))))
 
+
+;;; Blocked state, attached sessions (Task 1)
+
+(cl-defun healr-test--session-with-tail (tail-text &key (agent "claude"))
+  "Return a fake session whose buffer contains TAIL-TEXT."
+  (let ((session (healr-test--fake-session :agent agent)))
+    (with-current-buffer (healr-session-buffer session)
+      (erase-buffer)
+      (insert tail-text))
+    session))
+
+(ert-deftest healr-test-status-buffer-tail ()
+  (let ((buf (get-buffer-create " *healr-test-tail*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (erase-buffer)
+          (dotimes (n 50) (insert (format "line %d\n" n)))
+          (insert "tail marker"))
+        (let ((tail (healr-status--buffer-tail buf 5)))
+          (should (string-match-p "tail marker" tail))
+          (should (string-match-p "line 49" tail))
+          (should-not (string-match-p "line 40" tail)))
+      (kill-buffer buf)))
+  (should-not (healr-status--buffer-tail (get-buffer " *nonexistent*"))))
+
+(ert-deftest healr-test-status-note-output-blocked-match ()
+  (let ((healr-idle-seconds 3600)
+        (healr-agent-list '(("claude" :command "claude"
+                             :blocked-regexp "Do you want to proceed")))
+        (session (healr-test--session-with-tail
+                  "working away\nDo you want to proceed? (y/n) ")))
+    (unwind-protect
+        (progn
+          (healr-status--note-output session "Do you want to proceed? (y/n) ")
+          (should (eq (healr-session-state session) 'blocked))
+          (should-not (healr-session-timer session)))
+      (when-let* ((timer (healr-session-timer session))) (cancel-timer timer))
+      (kill-buffer (healr-session-buffer session)))))
+
+(ert-deftest healr-test-status-note-output-blocked-clears ()
+  (let ((healr-idle-seconds 3600)
+        (healr-agent-list '(("claude" :command "claude"
+                             :blocked-regexp "Do you want to proceed")))
+        (session (healr-test--session-with-tail
+                  "Do you want to proceed? (y/n) ")))
+    (unwind-protect
+        (progn
+          (healr-status--note-output session "chunk")
+          (should (eq (healr-session-state session) 'blocked))
+          (with-current-buffer (healr-session-buffer session)
+            (erase-buffer)
+            (insert "proceeding\n> "))
+          (healr-status--note-output session "proceeding\n> ")
+          (should (eq (healr-session-state session) 'working)))
+      (when-let* ((timer (healr-session-timer session))) (cancel-timer timer))
+      (kill-buffer (healr-session-buffer session)))))
+
+(ert-deftest healr-test-status-blocked-beats-prompt-regexp ()
+  (let ((healr-idle-seconds 3600)
+        (healr-agent-list '(("claude" :command "claude"
+                             :prompt-regexp "> $"
+                             :blocked-regexp "Do you want to proceed")))
+        (session (healr-test--session-with-tail
+                  "Do you want to proceed? (y/n) ")))
+    (unwind-protect
+        (progn
+          (healr-status--note-output session "thinking\n> ")
+          (should (eq (healr-session-state session) 'blocked)))
+      (when-let* ((timer (healr-session-timer session))) (cancel-timer timer))
+      (kill-buffer (healr-session-buffer session)))))
+
+(ert-deftest healr-test-status-mark-blocked-cancels-timer ()
+  (let ((healr-idle-seconds 3600)
+        (healr-agent-list nil)
+        (session (healr-test--fake-session)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'healr-list--maybe-refresh) #'ignore))
+          (healr-status--note-output session "x")
+          (should (healr-session-timer session))
+          (healr-status--mark-blocked session)
+          (should (eq (healr-session-state session) 'blocked))
+          (should-not (healr-session-timer session)))
+      (when-let* ((timer (healr-session-timer session))) (cancel-timer timer))
+      (kill-buffer (healr-session-buffer session)))))
+
+(ert-deftest healr-test-agent-normalize-blocked-regexp ()
+  (let ((agent (healr-agent--normalize
+                "foo" '(:blocked-regexp "proceed"))))
+    (should (equal (plist-get agent :blocked-regexp) "proceed")))
+  (should-not (plist-get (healr-agent--normalize "foo" nil)
+                         :blocked-regexp)))
+
 ;;; healr-test.el ends here
