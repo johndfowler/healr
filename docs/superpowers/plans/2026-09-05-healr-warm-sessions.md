@@ -403,6 +403,7 @@ Append to `test/healr-test.el`:
 (ert-deftest healr-test-session-restart-warm ()
   (let ((healr--sessions (make-hash-table :test 'equal))
         (healr-agent-list '(("fake" :command "fake" :persist t)))
+        (healr-session-created-hook nil)
         (spawns 0))
     (cl-letf (((symbol-function 'executable-find)
                (lambda (_cmd &optional _remote) "/usr/bin/true"))
@@ -529,14 +530,17 @@ Append the sidecar section (after the defcustoms):
            (current-buffer))))
 
 (defun healr-session--read-sidecar (tmux-name)
-  "Return the sidecar plist for TMUX-NAME, or nil when unreadable."
+  "Return the sidecar plist for TMUX-NAME, or nil when unreadable.
+Content that does not read as a keyword plist counts as unreadable."
   (let ((file (healr-session--sidecar-file tmux-name)))
     (when (file-readable-p file)
-      (condition-case nil
-          (with-temp-buffer
-            (insert-file-contents file)
-            (read (current-buffer)))
-        (error nil)))))
+      (let ((data (condition-case nil
+                      (with-temp-buffer
+                        (insert-file-contents file)
+                        (read (current-buffer)))
+                    (error nil))))
+        (when (and (listp data) (keywordp (car-safe data)))
+          data)))))
 
 (defun healr-session--delete-sidecar (tmux-name)
   "Delete the sidecar for TMUX-NAME when it exists."

@@ -13,6 +13,13 @@
   :type 'function
   :group 'healr)
 
+(defcustom healr-session-metadata-directory
+  (expand-file-name "healr/sessions/"
+                    (or (getenv "XDG_CACHE_HOME") "~/.cache"))
+  "Directory where warm-session sidecar metadata files live."
+  :type 'directory
+  :group 'healr)
+
 (defvar healr-session-created-hook nil
   "Hook run with the session after a session is created or restarted.
 `healr-status' uses it to attach process watchers.")
@@ -29,11 +36,53 @@
   state         ; `working', `idle' or `dead'
   last-output   ; float time of last terminal output
   recent-output ; tail of recent terminal output (prompt-regexp window)
-  timer)        ; idle timer or nil
+  timer         ; idle timer or nil
+  tmux)         ; tmux session name when warm, or nil
 
 (defun healr-session--key (root agent name)
   "Return the registry key for ROOT AGENT NAME."
   (list root agent name))
+
+(defun healr-session--sidecar-file (tmux-name)
+  "Return the sidecar file path for TMUX-NAME."
+  (expand-file-name (concat tmux-name ".el")
+                    healr-session-metadata-directory))
+
+(defun healr-session--write-sidecar (tmux-name root agent name backend)
+  "Write the sidecar for TMUX-NAME describing the warm session."
+  (unless (file-directory-p healr-session-metadata-directory)
+    (make-directory healr-session-metadata-directory t))
+  (with-temp-file (healr-session--sidecar-file tmux-name)
+    (prin1 (list :root root :agent agent :name name :backend backend)
+           (current-buffer))))
+
+(defun healr-session--read-sidecar (tmux-name)
+  "Return the sidecar plist for TMUX-NAME, or nil when unreadable.
+Content that does not read as a keyword plist counts as unreadable."
+  (let ((file (healr-session--sidecar-file tmux-name)))
+    (when (file-readable-p file)
+      (let ((data (condition-case nil
+                      (with-temp-buffer
+                        (insert-file-contents file)
+                        (read (current-buffer)))
+                    (error nil))))
+        (when (and (listp data) (keywordp (car-safe data)))
+          data)))))
+
+(defun healr-session--delete-sidecar (tmux-name)
+  "Delete the sidecar for TMUX-NAME when it exists."
+  (let ((file (healr-session--sidecar-file tmux-name)))
+    (when (file-exists-p file)
+      (delete-file file))))
+
+(defun healr-session--live-tmux-sessions ()
+  "Return the names of live tmux sessions with the `healr_' prefix."
+  (seq-filter
+   (lambda (name) (string-prefix-p "healr_" name))
+   (split-string
+    (or (healr-term--tmux-output "list-sessions" "-F" "#{session_name}")
+        "")
+    "\n" t)))
 
 (defun healr-session--default-root ()
   "Return the current project root, or `default-directory'."
@@ -97,12 +146,27 @@ Signals `user-error' when the agent's command is not on PATH."
     (user-error "healr: session `%s' already exists for %s"
                 name (plist-get agent :name)))
   (let* ((agent-name (plist-get agent :name))
-         (buffer (healr-term-make
-                  (healr-session--buffer-name-for root agent-name name)
-                  agent root))
+         (persist (healr-term-persist-p agent))
+         (tmux-name (and persist
+                         (healr-term--tmux-name root agent-name name)))
+         (backend (healr-term--resolve-backend agent))
+         (buffer-name (healr-session--buffer-name-for root agent-name name))
+         (buffer (if persist
+                     (condition-case err
+                         (progn
+                           (healr-term--tmux-spawn tmux-name agent root)
+                           (healr-term--tmux-attach
+                            buffer-name tmux-name backend))
+                       (error
+                        (healr-term--tmux-run "kill-session" "-t" tmux-name)
+                        (signal (car err) (cdr err))))
+                   (healr-term-make buffer-name agent root)))
          (session (healr-session--create
                    :root root :agent agent-name :name name :buffer buffer
-                   :state 'working :last-output (float-time))))
+                   :state 'working :last-output (float-time)
+                   :tmux tmux-name)))
+    (when persist
+      (healr-session--write-sidecar tmux-name root agent-name name backend))
     (puthash (healr-session--key root agent-name name) session healr--sessions)
     (run-hook-with-args 'healr-session-created-hook session)
     session))
@@ -148,6 +212,9 @@ NAME defaults to \"main\"."
         (set-process-sentinel proc #'ignore)
         (delete-process proc))
       (kill-buffer buf)))
+  (when-let* ((tmux-name (healr-session-tmux session)))
+    (healr-term--tmux-run "kill-session" "-t" tmux-name)
+    (healr-session--delete-sidecar tmux-name))
   (remhash (healr-session--key (healr-session-root session)
                                (healr-session-agent session)
                                (healr-session-name session))
@@ -164,24 +231,69 @@ NAME defaults to \"main\"."
                                 agent-name)))
          (root (healr-session-root session))
          (name (healr-session-name session))
+         (tmux-name (healr-session-tmux session))
          (old-buffer (healr-session-buffer session)))
     (when (buffer-live-p old-buffer)
       (kill-buffer old-buffer))
     (setf (healr-session-buffer session)
-          (healr-term-make
-           (healr-session--buffer-name-for root agent-name name)
-           agent root)
+          (if tmux-name
+              (progn
+                (healr-term--tmux-spawn tmux-name agent root)
+                (healr-term--tmux-attach
+                 (healr-session--buffer-name-for root agent-name name)
+                 tmux-name (healr-term--resolve-backend agent)))
+            (healr-term-make
+             (healr-session--buffer-name-for root agent-name name)
+             agent root))
           (healr-session-state session) 'working
           (healr-session-last-output session) (float-time))
     (run-hook-with-args 'healr-session-created-hook session)
     session))
 
 (defun healr-session-toggle (session)
-  "Bury SESSION's buffer when it is visible, otherwise pop to it."
-  (let ((buf (healr-session-buffer session)))
-    (if-let* ((win (get-buffer-window buf t)))
-        (quit-window nil win)
-      (pop-to-buffer buf))))
+  "Bury SESSION's buffer when visible, reattach when `detached',
+otherwise pop to it."
+  (if (eq (healr-session-state session) 'detached)
+      (healr-session-attach session)
+    (let ((buf (healr-session-buffer session)))
+      (if-let* ((win (and buf (get-buffer-window buf t))))
+          (quit-window nil win)
+        (pop-to-buffer buf)))))
+
+(defun healr-session-detach (session)
+  "Detach Emacs from SESSION without killing the agent.
+Only warm (tmux-persisted) sessions can detach; the agent keeps
+running and the process sentinel moves the session to `detached'."
+  (unless (healr-session-tmux session)
+    (user-error "healr: only warm (tmux) sessions can be detached"))
+  (when-let* ((buf (healr-session-buffer session)))
+    (when (buffer-live-p buf)
+      (kill-buffer buf)))
+  session)
+
+(defun healr-session-attach (session)
+  "Attach a fresh terminal buffer to SESSION's live tmux session.
+Runs `healr-session-created-hook' so watchers are re-wrapped, then
+pops to the buffer."
+  (unless (healr-session-tmux session)
+    (user-error "healr: session is not warm (no tmux)"))
+  (unless (healr-term--tmux-alive-p (healr-session-tmux session))
+    (user-error "healr: tmux session `%s' is gone"
+                (healr-session-tmux session)))
+  (let* ((agent-name (healr-session-agent session))
+         (agent (or (healr-agent-get agent-name)
+                    (user-error "healr: agent `%s' is no longer configured"
+                                agent-name)))
+         (buf (healr-term--tmux-attach
+               (healr-session--buffer-name-for
+                (healr-session-root session) agent-name
+                (healr-session-name session))
+               (healr-session-tmux session)
+               (healr-term--resolve-backend agent))))
+    (setf (healr-session-buffer session) buf)
+    (run-hook-with-args 'healr-session-created-hook session)
+    (pop-to-buffer buf)
+    session))
 
 (provide 'healr-session)
 ;;; healr-session.el ends here
