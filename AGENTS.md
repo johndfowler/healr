@@ -46,7 +46,7 @@ healr-agents  <-  healr-term  <-  healr-session  <-  healr-status  <-  healr
 
 ## Core architecture
 
-- **Agents** are plists `(:name :command :args :env :prompt-regexp :backend)`
+- **Agents** are plists `(:name :command :args :env :prompt-regexp :backend :persist)`
   configured through the `healr-agent-list` defcustom (alist of name -> plist)
   and normalized by `healr-agent--normalize`. `:prompt-regexp` matches the
   agent's input prompt in terminal output and marks the session idle
@@ -55,7 +55,8 @@ healr-agents  <-  healr-term  <-  healr-session  <-  healr-status  <-  healr
   missing costs nothing until launched (`executable-find` check at launch,
   `user-error` if absent).
 - **Sessions** are `cl-defstruct` `healr-session` (fields: root, agent, name,
-  buffer, state, last-output, timer) keyed by `(root agent name)` in the
+  buffer, state, last-output, recent-output, timer, tmux) keyed by
+  `(root agent name)` in the
   `healr--sessions` hash table. Default session name is `"main"`. Project
   root comes from `project-current` (project.el) falling back to
   `default-directory`, via the `healr-project-root-function` defcustom.
@@ -69,16 +70,18 @@ healr-agents  <-  healr-term  <-  healr-session  <-  healr-status  <-  healr
   - eat/vterm must **never** be required at top level; load with
     `(require 'eat nil t)` inside the backend function and signal `user-error`
     naming the missing package.
-- **Status** (`healr-status.el`): three states — `working` (output within
+- **Status** (`healr-status.el`): four states — `working` (output within
   `healr-idle-seconds`, default 5), `idle` (silence timeout or
-  `:prompt-regexp` match), `dead` (process sentinel fired).
+  `:prompt-regexp` match), `detached` (warm session: tmux alive, no
+  Emacs buffer attached), `dead` (process/tmux gone).
   `healr-status-attach` (on `healr-session-created-hook`) chains a watcher
   onto the process filter/sentinel, sets the modeline segment, and arms the
   idle timer. Dead sessions stay in the registry until explicitly killed;
   restart re-runs the same command in the same root.
 - **Fleet buffer**: `M-x healr-list`, a `tabulated-list-mode` buffer over all
-  sessions across all projects. Keys: `RET` jump, `n` new, `k` kill
-  (confirms), `r` restart (dead only), `R` rename, `g` refresh.
+  sessions across all projects. Keys: `RET` jump (reattach when
+  detached), `n` new, `k` kill (confirms), `r` restart (dead only),
+  `R` rename, `d` detach (warm only), `g` refresh (rehydrates first).
 - **Buffer naming**: `*healr:<project-base>:<agent>:<session>*`; on collision
   with a buffer owned by a *different* project root, disambiguate with an
   8-char sha1 prefix of root: `*healr:<base>-<hash>:<agent>:<session>*`.
@@ -86,6 +89,17 @@ healr-agents  <-  healr-term  <-  healr-session  <-  healr-status  <-  healr
   from `healr-project-agent-alist` (default `mix.exs` → `elixir`,
   `build.gradle[.kts]` → `kotlin`) and that agent is configured, the
   dispatch commands pre-select it in the completing-read.
+- **Warm sessions** (`:persist` on an agent, or `healr-persist-default`):
+  the agent runs in a detached tmux session
+  (`healr_<agent>_<name>_<hash8>`); the eat/vterm buffer runs a tmux
+  client attaching to it. Killing the buffer detaches (agent keeps
+  running); `healr-rehydrate` rebuilds the registry from live tmux
+  sessions + sidecars in `healr-session-metadata-directory`. The
+  sentinel branches `detached`/`dead` via `healr-term--tmux-alive-p`,
+  guarded on the dying process being the session's current client (the
+  buffer has no *other* live process). All tmux calls go through
+  `healr-term--tmux-run` / `healr-term--tmux-output`, which degrade
+  quietly when tmux is absent.
 - **healr-send-dwim**: from a file buffer, inserts `@relative/path` (or
   `@relative/path#L10-20` with an active region) at a live session's prompt
   without submitting; with multiple live sessions it prompts which.
@@ -133,7 +147,8 @@ the ERT suite plus Emacs Lisp conventions (below).
 - Customization lives in `defgroup healr` (defined in `healr-agents.el`);
   defcustoms: `healr-agent-list`, `healr-terminal-backend`,
   `healr-idle-seconds`, `healr-project-root-function`,
-  `healr-project-agent-alist`.
+  `healr-project-agent-alist`, `healr-persist-default`,
+  `healr-session-metadata-directory`.
 - The package binds **no global keys**; only the fleet buffer has its own
   keymap (`healr-list-mode-map`).
 - State changes go through `healr-status--set`, which refreshes the fleet

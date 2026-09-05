@@ -92,6 +92,34 @@ the marker file:
 A mapping only applies when the agent is also in `healr-agent-list`, so
 the defaults cost nothing where they are unused.
 
+## Warm sessions (persistence)
+
+Give an agent `:persist t` and it runs inside a detached tmux session:
+it keeps running when you kill its buffer or quit Emacs, and the fleet
+finds it again when you come back.
+
+```elisp
+(setq healr-agent-list
+      '(("claude" :command "claude" :persist t)))
+```
+
+- Killing a warm session's buffer **detaches** instead of destroying —
+  the fleet shows the session as `detached` and `RET` reattaches with
+  the tmux scrollback intact.
+- `M-x healr` on a detached `main` session reattaches instead of
+  spawning a duplicate.
+- Fleet buffer `d` detaches; `k` still kills (tmux session included).
+- Agent exit with nothing attached shows as `dead` at the next
+  rehydrate; `r` respawns it under the same tmux name.
+- Requires `tmux` on PATH — only for `:persist` agents; everything
+  else works without it.
+
+Rehydration runs on `M-x healr`, `M-x healr-new-session`, and whenever
+the fleet buffer opens or refreshes; `M-x healr-rehydrate` does it on
+demand.  Sidecar metadata lives in `healr-session-metadata-directory`
+(default `~/.cache/healr/sessions/`).  Set `healr-persist-default` to
+make persistence the default for every agent.
+
 ## Testing
 
 ```bash

@@ -268,7 +268,8 @@ running and the process sentinel moves the session to `detached'."
     (user-error "healr: only warm (tmux) sessions can be detached"))
   (when-let* ((buf (healr-session-buffer session)))
     (when (buffer-live-p buf)
-      (kill-buffer buf)))
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer buf))))
   session)
 
 (defun healr-session-attach (session)

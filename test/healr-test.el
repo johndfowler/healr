@@ -1100,4 +1100,32 @@
           (should (= rehydrated 1))))
       (kill-buffer (healr-session-buffer fake))))
 
+
+(ert-deftest healr-test-session-detach-live-process-no-prompt ()
+  (skip-unless (executable-find "cat"))
+  (let ((healr-idle-seconds 3600)
+        (healr-agent-list '(("fake" :command "cat")))
+        (buf (generate-new-buffer " *healr-test-dlp*"))
+        proc session)
+    (unwind-protect
+        (cl-letf (((symbol-function 'healr-term--tmux-alive-p)
+                   (lambda (_) t))
+                  ((symbol-function 'healr-list--maybe-refresh) #'ignore))
+          (setq proc (make-process :name "healr-test-dlp" :buffer buf
+                                   :command '("cat") :connection-type 'pipe
+                                   :noquery t)
+                session (healr-session--create
+                         :root "/tmp/" :agent "fake" :name "main"
+                         :buffer buf :state 'dead :last-output 0
+                         :tmux "healr_fake_main_aaaaaaaa"))
+          (healr-status-attach session)
+          (healr-session-detach session)
+          (should-not (buffer-live-p buf))
+          (accept-process-output proc 1)
+          (should (eq (healr-session-state session) 'detached)))
+      (when (and proc (process-live-p proc)) (delete-process proc))
+      (when-let* ((timer (and session (healr-session-timer session))))
+        (cancel-timer timer))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
 ;;; healr-test.el ends here

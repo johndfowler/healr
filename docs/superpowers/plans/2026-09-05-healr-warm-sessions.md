@@ -16,7 +16,7 @@ Spec: `docs/superpowers/specs/2026-09-05-healr-warm-sessions-design.md`
 - tmux is OPTIONAL: all tmux calls go through `healr-term--tmux-run` / `healr-term--tmux-output`, which must degrade quietly (exit 1 / nil) when tmux is absent. Loud failure only at explicit persist spawn (`healr-term--tmux-spawn`).
 - Non-persist sessions keep v1 behavior exactly.
 - Test command: `emacs -Q --batch -L . -l test/healr-test.el -f ert-run-tests-batch-and-exit`
-- Suite starts at 45 tests: 52 after Task 1, 61 after Task 2, 69 after Task 3.
+- Suite starts at 45 tests: 52 after Task 1, 61 after Task 2, 70 after Task 3 (69 + the detach-no-prompt regression test added in Task 4).
 
 ---
 
@@ -681,7 +681,8 @@ running and the process sentinel moves the session to `detached'."
     (user-error "healr: only warm (tmux) sessions can be detached"))
   (when-let* ((buf (healr-session-buffer session)))
     (when (buffer-live-p buf)
-      (kill-buffer buf)))
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer buf))))
   session)
 
 (defun healr-session-attach (session)
@@ -1171,68 +1172,82 @@ persistence the default for every agent.
 
 - [ ] **Step 5: Create test/e2e-warm.sh**
 
-```bash
-#!/usr/bin/env bash
-# e2e-warm.sh --- Real-tmux E2E for warm sessions (no API keys needed).
-# Spawns the fake agent warm, detaches by killing the buffer, simulates
-# an Emacs restart (clears the registry), rehydrates, reattaches, pings.
-set -euo pipefail
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-EAT_DIR="${HEALR_EAT_DIR:-$HOME/.config/emacs/.local/straight/build-29.4/eat}"
-COMPAT_DIR="${HEALR_COMPAT_DIR:-$HOME/.config/emacs/.local/straight/build-29.4/compat}"
+Create `test/e2e-warm.sh` (chmod +x). The shipped script: resolves
+`REPO_DIR`, `HEALR_EAT_DIR`/`HEALR_COMPAT_DIR` for the eat/compat load
+paths; pre-cleans leftover `healr_fake_main_*` tmux sessions and
+sidecars so it is idempotent; writes the elisp driver to a temp file
+and runs it with `emacs -Q --batch -l`; prints full output on failure
+and only the `E2E-WARM` lines on success. The driver elisp:
 
-emacs -Q --batch -L "$COMPAT_DIR" -L "$EAT_DIR" -L "$REPO_DIR" --eval "
-(progn
-  (require 'healr)
-  (setq healr-agent-list
-        (list (list \"fake\" :command \"$REPO_DIR/test/fake-agent.sh\"
-                    :persist t)))
-  (let* ((root \"$REPO_DIR/\")
-         (session (healr-session-get-or-create \"fake\" root)))
+```elisp
+(require 'healr)
+(setq healr-agent-list
+      (list (list "fake" :command "<repo>/test/fake-agent.sh" :persist t)))
+(let* ((root "<repo>/")
+       (session (healr-session-get-or-create "fake" root)))
+  (sleep-for 2)
+  (message "E2E-WARM tmux-alive: %s"
+           (healr-term--tmux-alive-p (healr-session-tmux session)))
+  (healr-session-detach session)
+  (sleep-for 1)
+  (message "E2E-WARM state-after-detach: %s" (healr-session-state session))
+  (clrhash healr--sessions)
+  (healr-rehydrate)
+  (let ((s (healr-session-get root "fake" "main")))
+    (message "E2E-WARM rehydrated-state: %s" (and s (healr-session-state s)))
+    (healr-session-attach s)
     (sleep-for 2)
-    (message \"E2E-WARM tmux-alive: %s\"
-             (healr-term--tmux-alive-p (healr-session-tmux session)))
-    (kill-buffer (healr-session-buffer session))
-    (sleep-for 1)
-    (message \"E2E-WARM state-after-detach: %s\"
-             (healr-session-state session))
-    (clrhash healr--sessions)
-    (healr-rehydrate)
-    (let ((s (healr-session-get root \"fake\" \"main\")))
-      (message \"E2E-WARM rehydrated-state: %s\"
-               (and s (healr-session-state s)))
-      (healr-session-attach s)
-      (sleep-for 2)
-      (healr-term-send-string (healr-session-buffer s) \"warm ping\")
-      (healr-term-send-return (healr-session-buffer s))
-      (sleep-for 2)
-      (with-current-buffer (healr-session-buffer s)
-        (message \"E2E-WARM echo: %s\"
-                 (if (save-excursion (goto-char (point-min))
-                                     (search-forward \"you said: warm ping\" nil t))
-                     \"YES\" \"NO\")))
-      (healr-session-kill s)
-      (message \"E2E-WARM tmux-gone: %s\"
-               (not (healr-term--tmux-alive-p (healr-session-tmux s))))))
-" 2>&1 | grep "E2E-WARM"
+    (healr-term-send-string (healr-session-buffer s) "warm ping")
+    (healr-term-send-return (healr-session-buffer s))
+    (sleep-for 2)
+    (with-current-buffer (healr-session-buffer s)
+      (message "E2E-WARM echo: %s"
+               (if (save-excursion (goto-char (point-min))
+                                   (search-forward "you said: warm ping" nil t))
+                   "YES" "NO")))
+    (healr-session-kill s)
+    (message "E2E-WARM tmux-gone: %s"
+             (not (healr-term--tmux-alive-p (healr-session-tmux s))))))
 ```
 
-Run: `chmod +x test/e2e-warm.sh`
+Also append this regression test to `test/healr-test.el` (detach with a
+live process must not prompt — `kill-buffer` on a process buffer asks
+"has a running process; kill it?" unless `kill-buffer-query-functions`
+is bound nil, which the detach implementation does):
 
-Expected output:
-
-```
-E2E-WARM tmux-alive: t
-E2E-WARM state-after-detach: detached
-E2E-WARM rehydrated-state: detached
-E2E-WARM echo: YES
-E2E-WARM tmux-gone: t
+```elisp
+(ert-deftest healr-test-session-detach-live-process-no-prompt ()
+  (skip-unless (executable-find "cat"))
+  (let ((healr-idle-seconds 3600)
+        (healr-agent-list '(("fake" :command "cat")))
+        (buf (generate-new-buffer " *healr-test-dlp*"))
+        proc session)
+    (unwind-protect
+        (cl-letf (((symbol-function 'healr-term--tmux-alive-p)
+                   (lambda (_) t))
+                  ((symbol-function 'healr-list--maybe-refresh) #'ignore))
+          (setq proc (make-process :name "healr-test-dlp" :buffer buf
+                                   :command '("cat") :connection-type 'pipe
+                                   :noquery t)
+                session (healr-session--create
+                         :root "/tmp/" :agent "fake" :name "main"
+                         :buffer buf :state 'dead :last-output 0
+                         :tmux "healr_fake_main_aaaaaaaa"))
+          (healr-status-attach session)
+          (healr-session-detach session)
+          (should-not (buffer-live-p buf))
+          (accept-process-output proc 1)
+          (should (eq (healr-session-state session) 'detached)))
+      (when (and proc (process-live-p proc)) (delete-process proc))
+      (when-let* ((timer (and session (healr-session-timer session))))
+        (cancel-timer timer))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
 ```
 
 - [ ] **Step 6: Run full suite + E2E**
 
 Run: `emacs -Q --batch -L . -l test/healr-test.el -f ert-run-tests-batch-and-exit`
-Expected: `69 passed, 0 failed`.
+Expected: `70 passed, 0 failed`.
 Run: `./test/e2e-warm.sh`
 Expected: the five E2E-WARM lines above.
 
@@ -1251,4 +1266,4 @@ git commit -m "docs: warm sessions (v0.3.0) and real-tmux e2e"
 - The sentinel contract in Task 3 matches the spec amendment exactly: current-client-or-buffer-gone, then `has-session` branch; non-warm sessions keep the v1.1 buffer-identity guard.
 - Detached sessions carry `buffer = nil`; every consumer touched by this plan (toggle, kill, fleet entries, DWIM's `healr-term-alive-p` filter) is nil-safe or excludes them.
 - tmux-less machines: `healr-term--tmux-run` returns 1 and `healr-term--tmux-output` nil without tmux, so rehydrate is a silent no-op; the only loud failure is the explicit spawn (`user-error`).
-- Test counts: 45 → 52 (T1) → 61 (T2) → 69 (T3).
+- Test counts: 45 → 52 (T1) → 61 (T2) → 70 (69 in T3 + 1 detach regression test in T4).

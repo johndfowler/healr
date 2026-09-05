@@ -26,6 +26,15 @@ The package is split across five `.el` files, each a distinct concern:
 
 Sessions are keyed by `(root agent name)` in `healr--sessions` hash table. The `healr-session` struct (`cl-defstruct`) tracks: root, agent, name, buffer, state, last-output, timer.
 
+### Warm sessions
+
+Agents with `:persist t` (or `healr-persist-default`) run in detached
+tmux sessions; the terminal buffer attaches a tmux client. Killing the
+buffer detaches (agent survives); `healr-rehydrate` rebuilds the
+registry from live tmux sessions and sidecars in
+`healr-session-metadata-directory` (`~/.cache/healr/sessions/`).
+States: working / idle / detached / dead. Fleet `d` detaches.
+
 ### Terminal backends
 
 - **eat** (default): calls `eat-exec` directly — no shell startup files. Wrap agents needing direnv/shims via `:command "direnv" :args ("exec" "." "cmd")`.
@@ -80,4 +89,4 @@ Preconfigures a `fake` agent (`test/fake-agent.sh`) — no API keys needed.
 - No external dependencies beyond Emacs stdlib + eat/vterm
 - `healr-` prefix on all public symbols
 - Hooks: `healr-session-created-hook` (used by `healr-status-attach`)
-- Custom vars: `healr-agent-list`, `healr-terminal-backend`, `healr-idle-seconds`, `healr-project-root-function`, `healr-project-agent-alist`
+- Custom vars: `healr-agent-list`, `healr-terminal-backend`, `healr-idle-seconds`, `healr-project-root-function`, `healr-project-agent-alist`, `healr-persist-default`, `healr-session-metadata-directory`
