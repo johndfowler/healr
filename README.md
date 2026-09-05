@@ -1,6 +1,7 @@
-<img src="assets/logo.png" alt="healr logo — a temple before a banded seventies sunset, prompt in the pediment" width="128" align="right">
-
-# healr
+<p align="center">
+  <img src="assets/logo.png" alt="healr logo — a temple before a banded seventies sunset, prompt in the pediment" width="160">
+</p>
+<h1 align="center">healr</h1>
 
 A fleet layer for agentic CLI tools in Emacs — the child of herdr,
 Doom Emacs, and codersauce/red. healr herds your agent fleet the way
